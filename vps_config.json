@@ -1,0 +1,8 @@
+{
+  "masterUrl": "https://kidzlab.edu.vn",
+  "workerName": "VPS_Worker_08",
+  "proxyCount": 10,
+  "useLocalNetwork": true,
+  "loadPerProxy": 20,
+  "localLoad": 100
+}
