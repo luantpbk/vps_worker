@@ -45,6 +45,8 @@ let proxyCooldown = {}; // Thời gian ép proxy nghỉ ngơi (Timestamp)
 let proxyHealth = {};
 let pendingChecks = new Set();
 let masterSocket = null;
+let proxyReserved = {};
+let proxyActive = {};
 
 let dynamicProxies = [];
 
@@ -558,7 +560,7 @@ async function handleTask(channel) {
 
   // 💡 [FIX LOGIC]: ĐẶT GẠCH (RESERVE) SLOT PROXY NGAY LẬP TỨC!
   // Khóa slot này lại để các luồng khác không bị cấp trùng khi chưa check Live xong.
-  proxyUsage[proxy] = (proxyUsage[proxy] || 0) + 1;
+  proxyReserved[proxy] = (proxyReserved[proxy] || 0) + 1;
   assignedProxies[channel.username] = proxy;
 
   const ua = getNextUA();
