@@ -63,7 +63,7 @@ echo "=== Start worker ==="
 
 pm2 delete tiktok_worker || true
 
-pm2 start vps_worker.js --name "tiktok_worker"
+pm2 start vps_worker.js --name "tiktok_worker" -i 2
 
 pm2 save
 

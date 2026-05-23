@@ -8,11 +8,11 @@ const axios = require("axios");
 const fs = require("fs");
 const crypto = require("crypto");
 const CONFIG_FILE = "vps_config.json";
-
+const INSTANCE_ID = process.env.NODE_APP_INSTANCE || "0";
 // Cấu hình mặc định
 let config = {
   masterUrl: "http://localhost:3000",
-  workerName: "VPS_Worker_01",
+  workerName: `VPS_Worker_01_${INSTANCE_ID}`,
   proxyCount: 5,
   useLocalNetwork: false,
   loadPerProxy: 10,
@@ -26,6 +26,7 @@ function loadConfig() {
         ...config,
         ...JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")),
       };
+      config.workerName = `${config.workerName}_${INSTANCE_ID}`;
     } catch (e) {
       logError("Lỗi đọc file cấu hình, dùng mặc định.");
     }
@@ -45,8 +46,6 @@ let proxyCooldown = {}; // Thời gian ép proxy nghỉ ngơi (Timestamp)
 let proxyHealth = {};
 let pendingChecks = new Set();
 let masterSocket = null;
-let proxyReserved = {};
-let proxyActive = {};
 
 let dynamicProxies = [];
 
@@ -560,7 +559,7 @@ async function handleTask(channel) {
 
   // 💡 [FIX LOGIC]: ĐẶT GẠCH (RESERVE) SLOT PROXY NGAY LẬP TỨC!
   // Khóa slot này lại để các luồng khác không bị cấp trùng khi chưa check Live xong.
-  proxyReserved[proxy] = (proxyReserved[proxy] || 0) + 1;
+  proxyUsage[proxy] = (proxyUsage[proxy] || 0) + 1;
   assignedProxies[channel.username] = proxy;
 
   const ua = getNextUA();
