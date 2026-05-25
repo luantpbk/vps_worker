@@ -17,12 +17,12 @@ echo "=============================="
 # ==========================================
 
 WORKER_NAME="$1"
-ENV_BASE64="$2"
+ENV_CONTENT="$2"
 
-if [ -z "$WORKER_NAME" ] || [ -z "$ENV_BASE64" ]; then
+if [ -z "$WORKER_NAME" ] || [ -z "$ENV_CONTENT" ]; then
     echo ""
     echo "Usage:"
-    echo "bash install.sh <worker_name> <env_base64>"
+    echo "bash install.sh <worker_name> <env_content>"
     echo ""
     exit 1
 fi
@@ -36,14 +36,8 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# ==========================================
-# DECODE ENV
-# ==========================================
 
-echo ""
-echo "=== Decode .env ==="
-
-ENV_CONTENT=$(echo "$ENV_BASE64" | base64 -d)
+ENV_CONTENT="$2"
 
 # ==========================================
 # UPDATE SYSTEM
