@@ -49,7 +49,7 @@ npm install
 
 echo "=== Update workerName ==="
 
-sed -i "s/\"workerName\": *\"VPS_Worker_08\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json
+sed -i "s/\"workerName\": *\"Worker_01\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json
 
 echo "=== Create .env ==="
 
