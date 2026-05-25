@@ -127,7 +127,7 @@ sed -i "s/\"workerName\": *\"VPS_Worker_08\"/\"workerName\": \"$WORKER_NAME\"/g"
 echo ""
 echo "=== Create .env ==="
 
-echo -e "$ENV_CONTENT" > .env
+echo -e "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
 # ==========================================
 # INSTALL PM2
