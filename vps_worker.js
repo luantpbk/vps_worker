@@ -514,11 +514,7 @@ setInterval(async () => {
 
   if (availableSlots <= 0) return;
 
-  const tasksToProcess = Math.min(
-    dynamicProxies.length,
-    availableSlots,
-    localTaskQueue.length,
-  );
+  const tasksToProcess = Math.min(5, availableSlots, localTaskQueue.length);
 
   for (let i = 0; i < tasksToProcess; i++) {
     const channel = localTaskQueue.shift();
@@ -823,7 +819,7 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       }
 
       sendMasterLog(
-        `[SOCKET ĐỨT] @${channel.username} | IP: ${proxy === "local" ? "VPS" : proxy.split("@").pop()} | Lỗi: ${err.message}`,
+        `[SOCKET ĐỨT] ${channel.username} | IP: ${proxy === "local" ? "VPS" : proxy.split("@").pop()} | Lỗi: ${err.message}`,
       );
 
       masterSocket.emit("radar_result", { channel, status: realStatus });
@@ -969,7 +965,7 @@ setInterval(() => {
         status: "REQUEUE",
       });
       sendMasterLog(
-        `[DỌN RÁC] 🧹 Socket @${user} chết lâm sàng. Trả kênh về Hàng Đợi.`,
+        `[DỌN RÁC] 🧹 Socket ${user} chết lâm sàng. Trả kênh về Hàng Đợi.`,
       );
     }
   }
@@ -984,7 +980,7 @@ setInterval(() => {
         status: "REQUEUE",
       });
       sendMasterLog(
-        `[DỌN RÁC] 🧹 Truy vấn @${user} kẹt mạng > 30s. Đã giải phóng Slot!`,
+        `[DỌN RÁC] 🧹 Truy vấn ${user} kẹt mạng > 30s. Đã giải phóng Slot!`,
       );
     }
   }
