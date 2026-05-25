@@ -1,0 +1,151 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+set -e
+
+echo "=============================="
+echo " TikTok Worker Termux Install "
+echo "=============================="
+
+WORKER_NAME="$1"
+ENV_CONTENT="$2"
+
+if [ -z "$WORKER_NAME" ] || [ -z "$ENV_CONTENT" ]; then
+    echo "Usage:"
+    echo "bash install-termux.sh <worker_name> <socket_secret>"
+    exit 1
+fi
+
+# ==========================================
+# TERMUX UPDATE
+# ==========================================
+
+echo "=== Update packages ==="
+
+pkg update -y
+pkg upgrade -y
+
+# ==========================================
+# INSTALL BASE PACKAGES
+# ==========================================
+
+echo "=== Install packages ==="
+
+PACKAGES=(git curl wget nano nodejs)
+
+for pkg in "${PACKAGES[@]}"; do
+    if ! command -v "${pkg%%-*}" >/dev/null 2>&1; then
+        echo "[INSTALL] $pkg"
+        pkg install -y "$pkg"
+    else
+        echo "[OK] $pkg exists"
+    fi
+done
+
+# ==========================================
+# CHECK NODE
+# ==========================================
+
+echo "Node: $(node -v)"
+echo "NPM: $(npm -v)"
+
+# ==========================================
+# WORKER DIRECTORY
+# ==========================================
+
+WORKER_DIR="$HOME/worker"
+
+# ==========================================
+# WORKER SYNC
+# ==========================================
+
+echo "=== Worker sync ==="
+
+if [ -d "$WORKER_DIR" ]; then
+    echo "[OK] Worker exists -> updating"
+
+    cd "$WORKER_DIR"
+
+    if [ -d ".git" ]; then
+        git fetch origin || true
+        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
+        git clean -fd
+    else
+        cd "$HOME"
+        rm -rf worker
+        git clone https://github.com/luantpbk/vps_worker.git "$WORKER_DIR"
+        cd "$WORKER_DIR"
+    fi
+else
+    git clone https://github.com/luantpbk/vps_worker.git "$WORKER_DIR"
+    cd "$WORKER_DIR"
+fi
+
+# ==========================================
+# NPM INSTALL
+# ==========================================
+
+echo "=== Install npm packages ==="
+
+if [ -d "node_modules" ]; then
+    echo "[OK] node_modules exists -> skip npm install"
+else
+    npm install
+fi
+
+# ==========================================
+# CONFIG UPDATE
+# ==========================================
+
+echo "=== Config worker ==="
+
+sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json || true
+
+echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
+
+# ==========================================
+# PM2 INSTALL
+# ==========================================
+
+echo "=== Check PM2 ==="
+
+if ! command -v pm2 >/dev/null 2>&1; then
+    npm install -g pm2
+else
+    echo "[OK] PM2 exists"
+fi
+
+# ==========================================
+# START WORKER
+# ==========================================
+
+echo "=== Restart worker ==="
+
+pm2 delete worker || true
+
+pm2 start vps_worker.js --name worker
+
+pm2 save
+
+# ==========================================
+# AUTO START TERMUX
+# ==========================================
+
+mkdir -p ~/.termux
+
+cat > ~/.termux/boot.sh <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+pm2 resurrect
+EOF
+
+chmod +x ~/.termux/boot.sh
+
+# ==========================================
+# DONE
+# ==========================================
+
+echo ""
+echo "===================="
+echo " INSTALL COMPLETED "
+echo "===================="
+
+pm2 list
