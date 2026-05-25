@@ -95,24 +95,24 @@ echo "NPM: $(npm -v)"
 
 echo "=== Worker sync ==="
 
-if [ -d "/root/worker" ]; then
+if [ -d "~/worker" ]; then
     echo "[OK] Worker exists -> updating"
 
-    cd /root/worker
+    cd ~/worker
 
     if [ -d ".git" ]; then
         git fetch origin || true
         git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
         git clean -fd
     else
-        cd /root
+        cd ~
         rm -rf worker
-        git clone https://github.com/luantpbk/vps_worker.git /root/worker
-        cd /root/worker
+        git clone https://github.com/luantpbk/vps_worker.git ~/worker
+        cd ~/worker
     fi
 else
-    git clone https://github.com/luantpbk/vps_worker.git /root/worker
-    cd /root/worker
+    git clone https://github.com/luantpbk/vps_worker.git ~/worker
+    cd ~/worker
 fi
 
 # ==========================================
@@ -159,7 +159,7 @@ pm2 delete worker || true
 pm2 start vps_worker.js --name worker
 
 pm2 save
-pm2 startup systemd -u root --hp /root || true
+pm2 startup systemd -u root --hp ~ || true
 
 # ==========================================
 # DONE
