@@ -536,7 +536,7 @@ setInterval(async () => {
   if (availableSlots <= 0) return;
   // 2. Tốc độ an toàn: Mỗi IP thực hiện tối đa 1 check / giây.
   // Nếu tất cả Proxy rớt mạng, giữ tốc độ tối thiểu 1 kênh/giây để xử lý dần hàng đợi.
-  const tasksToProcess = Math.max(1, aliveIPs);
+  const tasksToProcess = Math.max(1, aliveIPs * 2);
 
   // 3. Rút kênh ra xử lý tương ứng với sức mạnh (Ví dụ: 20 Proxy sống => Rút 20 kênh/giây)
   for (let i = 0; i < tasksToProcess; i++) {
@@ -591,7 +591,7 @@ async function executeTask(channel) {
 
   try {
     // 💡 JITTER: Phân tán request chống dính bot
-    await new Promise((resolve) => setTimeout(resolve, Math.random() * 600));
+    await new Promise((resolve) => setTimeout(resolve, Math.random() * 300));
 
     const res = await axios.get(
       `https://www.tiktok.com/@${channel.username}/live`,
@@ -848,9 +848,8 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       sendWorkerStatus();
 
       const errMsg = String(err).toLowerCase();
-      let realStatus = "ERROR"; // 💡 Mặc định: Cắm Socket thất bại -> Báo ERROR để Master khóa 5 phút
+      let realStatus = "REQUEUE";
 
-      // Ngoại trừ trường hợp Tiktok API trả về rõ ràng là kênh đang Offline/Đã tắt thì báo OFFLINE
       if (
         errMsg.includes("not found") ||
         errMsg.includes("offline") ||
@@ -858,8 +857,13 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
         errMsg.includes("room_id")
       ) {
         realStatus = "OFFLINE";
+      } else if (errMsg.includes("suspended") || errMsg.includes("banned")) {
+        realStatus = "ERROR"; // Chỉ phạt 5 phút nếu Tiktok báo kênh này bị cấm
       }
-
+      // 💡 Thêm dòng Log này để bạn MẮT THẤY TAI NGHE xem cái gì đang gây lỗi
+      console.log(
+        `[SOCKET ĐỨT] Kênh @${channel.username} | Proxy: ${proxy === "local" ? "Mạng VPS" : proxy.split("@").pop()} | Lỗi: ${err.message}`,
+      );
       masterSocket.emit("radar_result", { channel, status: realStatus });
       stopWebcast(channel.username);
     });
@@ -1018,7 +1022,7 @@ setInterval(() => {
       stopWebcast(user);
       masterSocket.emit("radar_result", {
         channel: { username: user },
-        status: "ERROR",
+        status: "REQUEUE",
       });
       cleaned++;
     }
