@@ -141,23 +141,26 @@ setInterval(() => {
 // ==========================================
 function sendWorkerStatus() {
   if (masterSocket && masterSocket.connected) {
-    const queuedUsernames = localTaskQueue.map((c) => c.username);
-    const allPending = [
+    const activeNames = Object.keys(activeConnections);
+
+    // Đảm bảo pendingChannels không chứa những kênh đã kết nối thành công (active)
+    let allPending = [
       ...Array.from(pendingChecks.keys()),
-      ...queuedUsernames,
-    ];
+      ...localTaskQueue.map((c) => c.username),
+    ].filter((uname) => !activeNames.includes(uname));
+
+    // Loại bỏ trùng lặp
+    allPending = [...new Set(allPending)];
 
     masterSocket.emit("worker_status", {
-      currentLoad:
-        Object.keys(activeConnections).length +
-        pendingChecks.size +
-        localTaskQueue.length,
-      runningChannels: Object.keys(activeConnections),
-      pendingChannels: allPending,
+      currentLoad: activeNames.length + allPending.length,
+      runningChannels: activeNames, // Dữ liệu cho mục "Cắm Socket" trên UI
+      pendingChannels: allPending, // Dữ liệu cho mục "Đang Check" trên UI
+      proxyUsage: proxyUsage,
     });
   }
 }
-setInterval(sendWorkerStatus, 20000);
+setInterval(sendWorkerStatus, 10000);
 
 async function checkProxyHealth() {
   let checkList = [...dynamicProxies];
@@ -510,7 +513,7 @@ setInterval(async () => {
   const tasksToProcess = Math.min(3, availableSlots, localTaskQueue.length);
 
   for (let i = 0; i < tasksToProcess; i++) {
-    const channel = localTaskQueue.shift();
+    const channel = localTaskQueue.splice(0, 1)[0];
     setTimeout(() => {
       executeTask(channel);
     }, Math.random() * 3000);
@@ -946,6 +949,8 @@ fs.watchFile(CONFIG_FILE, (curr, prev) => {
           delete proxyGeoData[p];
           delete proxyFailCount[p];
           delete proxyCooldown[p];
+          // BỔ SUNG DÒNG NÀY ĐỂ DỌN TRẮNG RAM
+          if (agentCache[p]) delete agentCache[p];
         });
 
         const targetKeyCount = Math.ceil(newProxyCount / 2);
@@ -1016,3 +1021,12 @@ setInterval(() => {
 }, 30000);
 
 connectToMaster();
+
+process.on("uncaughtException", (err) => {
+  logError(`[CRASH PROTECT] Lỗi không lường trước: ${err.message}`);
+  console.error(err.stack);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  logError(`[CRASH PROTECT] Promise bị từ chối: ${reason}`);
+});
