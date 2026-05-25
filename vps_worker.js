@@ -527,7 +527,13 @@ setInterval(async () => {
   for (let p in proxyHealth) {
     if (proxyHealth[p].status === "SẴN SÀNG") aliveIPs++;
   }
+  // 💡 VÁ LỖI: Tính toán chỗ trống trước khi moi kênh ra khỏi Queue
+  const totalProcessing =
+    Object.keys(activeConnections).length + pendingChecks.size;
+  const availableSlots = currentDynamicMaxLoad - totalProcessing;
 
+  // NẾU HẾT CHỖ -> Dừng băng chuyền lại ngay lập tức! Không moi thêm kênh để tránh spam REQUEUE.
+  if (availableSlots <= 0) return;
   // 2. Tốc độ an toàn: Mỗi IP thực hiện tối đa 1 check / giây.
   // Nếu tất cả Proxy rớt mạng, giữ tốc độ tối thiểu 1 kênh/giây để xử lý dần hàng đợi.
   const tasksToProcess = Math.max(1, aliveIPs);
@@ -547,12 +553,14 @@ const BASE_HEADERS = {
 };
 
 async function executeTask(channel) {
+  // Bỏ qua nếu kênh đang cắm hoặc đang check
   if (
     activeConnections[channel.username] ||
     pendingChecks.has(channel.username)
   )
     return;
 
+  // Lọc tràn tải: Trả lại Hàng đợi tổng (REQUEUE)
   const totalProcessing =
     Object.keys(activeConnections).length + pendingChecks.size;
   if (totalProcessing >= currentDynamicMaxLoad) {
@@ -562,6 +570,7 @@ async function executeTask(channel) {
   pendingChecks.add(channel.username);
   sendWorkerStatus();
 
+  // Lấy Proxy, nếu cạn Proxy -> Trả lại Hàng đợi tổng
   const proxy = getNextAvailableProxy();
   if (!proxy) {
     pendingChecks.delete(channel.username);
@@ -569,7 +578,7 @@ async function executeTask(channel) {
     return masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
   }
 
-  proxyUsage[proxy] = (proxyUsage[proxy] || 0) + 1;
+  proxyUsage[proxy] = (proxyUsage[proxy] || 0) + 1; // 💡 Ghi nhận sử dụng 1 Slot Proxy
   assignedProxies[channel.username] = proxy;
 
   const ua = getNextUA();
@@ -581,6 +590,7 @@ async function executeTask(channel) {
   if (proxy !== "local") options.httpsAgent = getCachedAgent(proxy);
 
   try {
+    // 💡 JITTER: Phân tán request chống dính bot
     await new Promise((resolve) => setTimeout(resolve, Math.random() * 600));
 
     const res = await axios.get(
@@ -588,72 +598,77 @@ async function executeTask(channel) {
       options,
     );
 
+    // Bắt lỗi Proxy chết (để đổi Proxy khác)
     if (res.status === 407 || res.status === 502 || res.status === 503)
       throw new Error("PROXY_DEAD");
-    if (res.status === 403 || res.status === 429 || res.status >= 500)
-      throw new Error("TIKTOK_BLOCK");
+
+    // Bắt kênh không tồn tại / Khóa tài khoản
     if (res.status === 404) {
       masterSocket.emit("radar_result", { channel, status: "NOT_FOUND" });
       pendingChecks.delete(channel.username);
-      sendWorkerStatus();
+      stopWebcast(channel.username); // 💡 Trả lại Slot Proxy
       return;
     }
 
     let status = "OFFLINE";
-    if (res.status === 200) {
+
+    // 💡 BỊ CHẶN HTTP (403, 429) HOẶC LỖI TIKTOK -> CHUYỂN SANG ĐÂM MÙ BẰNG SOCKET
+    if (res.status === 403 || res.status === 429 || res.status >= 500) {
+      status = "BLIND_TEST";
+    } else if (res.status === 200) {
       const html = res.data;
 
-      // 1. Phân biệt chính xác CAPTCHA (Bị chặn thật sự)
+      // 💡 VĂNG CAPTCHA -> CHUYỂN SANG ĐÂM MÙ BẰNG SOCKET
       if (
         html.includes("<title>Verification</title>") ||
         html.includes("Please confirm you are human")
       ) {
-        throw new Error("TIKTOK_BLOCK");
-      }
-
-      // 2. Nhận diện kênh 18+ (Bắt đăng nhập xác nhận tuổi)
-      const finalUrl =
-        res.request?.res?.responseUrl || res.request?.responseURL || "";
-      const isLoginRedirect = finalUrl.includes("/login");
-      const isAgeRestricted =
-        html.includes("age_restricted") ||
-        html.toLowerCase().includes("verify your age") ||
-        html.toLowerCase().includes("xác nhận tuổi") ||
-        html.toLowerCase().includes("log in to verify");
-
-      // 3. Phân loại trạng thái
-      if (
-        html.includes('"status":2') ||
-        html.includes('"roomStatus":2') ||
-        html.includes('"is_live":true') ||
-        html.includes('"isLive":true')
-      ) {
-        status = "LIVE";
-      } else if (isLoginRedirect || isAgeRestricted) {
-        // Kênh bị gắn mác 18+, Axios không thể nhìn xuyên qua tường đăng nhập
-        // -> Chuyển sang chế độ "BLIND_TEST" (Thử mù bằng Socket)
         status = "BLIND_TEST";
+      } else {
+        const finalUrl =
+          res.request?.res?.responseUrl || res.request?.responseURL || "";
+        const isLoginRedirect = finalUrl.includes("/login");
+        const isAgeRestricted =
+          html.includes("age_restricted") ||
+          html.toLowerCase().includes("verify your age") ||
+          html.toLowerCase().includes("xác nhận tuổi") ||
+          html.toLowerCase().includes("log in to verify");
+
+        if (
+          html.includes('"status":2') ||
+          html.includes('"roomStatus":2') ||
+          html.includes('"is_live":true') ||
+          html.includes('"isLive":true')
+        ) {
+          status = "LIVE";
+        } else if (isLoginRedirect || isAgeRestricted) {
+          // 💡 KÊNH 18+ BẮT ĐĂNG NHẬP -> CHUYỂN SANG ĐÂM MÙ BẰNG SOCKET
+          status = "BLIND_TEST";
+        }
       }
     }
 
-    if (status === "LIVE") {
-      masterSocket.emit("radar_result", { channel, status: "LIVE" }); // Báo ngay cho Master
+    // --- KẾT LUẬN SAU KHI CHECK AXIOS ---
+    if (status === "LIVE" || status === "BLIND_TEST") {
+      // Nếu là LIVE chuẩn, báo về Master ngay lập tức để ghi DB
+      if (status === "LIVE") {
+        masterSocket.emit("radar_result", { channel, status: "LIVE" });
+      }
+
       delete proxyFailCount[proxy];
       delete proxyCooldown[proxy];
       if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
-      startWebcast(channel, proxy, ua, false);
-    } else if (status === "BLIND_TEST") {
-      // 💡 KHÔNG gửi radar_result vội, để startWebcast tự cắm Socket rồi mới phán xử
-      delete proxyFailCount[proxy];
-      delete proxyCooldown[proxy];
-      if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
-      startWebcast(channel, proxy, ua, true); // Chuyền cờ isBlindTest = true
+
+      // Chuyển cờ cho Socket: Nếu BLIND_TEST thì isBlindTest = true
+      startWebcast(channel, proxy, ua, status === "BLIND_TEST");
     } else {
-      masterSocket.emit("radar_result", { channel, status });
+      // Trả về OFFLINE an toàn (Bỏ qua chứ không phạt)
+      masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
       pendingChecks.delete(channel.username);
-      sendWorkerStatus();
+      stopWebcast(channel.username); // 💡 Trả lại Slot Proxy
     }
   } catch (e) {
+    // --- XỬ LÝ KHI ĐỨT MẠNG PROXY ---
     if (proxy !== "local") {
       const isNetworkError =
         e.message === "PROXY_DEAD" ||
@@ -661,6 +676,7 @@ async function executeTask(channel) {
         e.code === "ETIMEDOUT" ||
         e.message.includes("timeout") ||
         e.message.includes("socket");
+
       if (isNetworkError) {
         proxyFailCount[proxy] = (proxyFailCount[proxy] || 0) + 1;
         if (proxyFailCount[proxy] >= 3) {
@@ -668,11 +684,12 @@ async function executeTask(channel) {
             `🚫 Proxy ${proxy.split("@").pop()} đứt mạng 3 lần. Xin Master đổi mới...`,
           );
           if (proxyHealth[proxy]) proxyHealth[proxy].status = "BÁO LỖI";
-          if (masterSocket && masterSocket.connected)
+          if (masterSocket && masterSocket.connected) {
             masterSocket.emit("worker_report_dead_proxy", {
               proxy: proxy,
               workerName: config.workerName,
             });
+          }
           dynamicProxies = dynamicProxies.filter((dp) => dp !== proxy);
           delete proxyHealth[proxy];
           delete proxyUsage[proxy];
@@ -690,24 +707,30 @@ async function executeTask(channel) {
           proxyHealth[proxy].status = "TikTok chặn tạm thời";
       }
 
+      // Cập nhật lại công suất tối đa
       let aliveCount = 0;
       let localAlive = proxyHealth["local"]?.status === "SẴN SÀNG";
-      for (let p in proxyHealth)
+      for (let p in proxyHealth) {
         if (p !== "local" && proxyHealth[p].status === "SẴN SÀNG") aliveCount++;
+      }
       currentDynamicMaxLoad =
         aliveCount * config.loadPerProxy + (localAlive ? config.localLoad : 0);
-      if (masterSocket && masterSocket.connected)
+      if (masterSocket && masterSocket.connected) {
         masterSocket.emit("worker_update_capacity", {
           maxLoad: currentDynamicMaxLoad,
         });
+      }
     }
+
     pendingChecks.delete(channel.username);
+
+    // 💡 UPDATE: Lỗi HTTP do đứt Proxy / Timeout -> Gửi trả kênh về đầu hàng (REQUEUE) để giao máy khác quét
     masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
-    sendWorkerStatus();
+    stopWebcast(channel.username); // 💡 Trả lại Slot Proxy
   }
 }
 
-function startWebcast(channel, proxy, ua) {
+function startWebcast(channel, proxy, ua, isBlindTest = false) {
   const key = getNextEulerKey();
   let reqOptions = { headers: { "User-Agent": ua } };
   let wsOptions = {
@@ -768,6 +791,13 @@ function startWebcast(channel, proxy, ua) {
     .then((state) => {
       activeConnections[channel.username] = conn;
       pendingChecks.delete(channel.username);
+
+      if (isBlindTest) {
+        masterSocket.emit("radar_result", { channel, status: "LIVE" });
+        logInfo(
+          `🔞/🛡️ Đâm mù thành công kênh 18+ hoặc bị Captcha [${channel.username}]. Đã cắm Socket!`,
+        );
+      }
       sendWorkerStatus();
 
       conn.on("warn", (err) => {
@@ -807,7 +837,8 @@ function startWebcast(channel, proxy, ua) {
       });
 
       conn.on("disconnected", () => {
-        masterSocket.emit("radar_result", { channel, status: "ERROR" });
+        // 💡 VÁ LỖI: Chỉ báo OFFLINE thay vì ERROR để không bị khóa oan
+        masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
         stopWebcast(channel.username);
       });
     })
@@ -815,7 +846,21 @@ function startWebcast(channel, proxy, ua) {
       checkAndReportDeadKey(err, key);
       pendingChecks.delete(channel.username);
       sendWorkerStatus();
-      masterSocket.emit("radar_result", { channel, status: "ERROR" });
+
+      const errMsg = String(err).toLowerCase();
+      let realStatus = "ERROR"; // 💡 Mặc định: Cắm Socket thất bại -> Báo ERROR để Master khóa 5 phút
+
+      // Ngoại trừ trường hợp Tiktok API trả về rõ ràng là kênh đang Offline/Đã tắt thì báo OFFLINE
+      if (
+        errMsg.includes("not found") ||
+        errMsg.includes("offline") ||
+        errMsg.includes("ended") ||
+        errMsg.includes("room_id")
+      ) {
+        realStatus = "OFFLINE";
+      }
+
+      masterSocket.emit("radar_result", { channel, status: realStatus });
       stopWebcast(channel.username);
     });
 }
@@ -909,7 +954,7 @@ fs.watchFile(CONFIG_FILE, (curr, prev) => {
             if (masterSocket && masterSocket.connected) {
               masterSocket.emit("radar_result", {
                 channel: { username: user },
-                status: "BLOCKED",
+                status: "REQUEUE",
               });
             }
           }
