@@ -556,7 +556,7 @@ async function executeTask(channel) {
   const totalProcessing =
     Object.keys(activeConnections).length + pendingChecks.size;
   if (totalProcessing >= currentDynamicMaxLoad) {
-    return masterSocket.emit("radar_result", { channel, status: "BLOCKED" });
+    return masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
   }
 
   pendingChecks.add(channel.username);
@@ -566,7 +566,7 @@ async function executeTask(channel) {
   if (!proxy) {
     pendingChecks.delete(channel.username);
     sendWorkerStatus();
-    return masterSocket.emit("radar_result", { channel, status: "BLOCKED" });
+    return masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
   }
 
   proxyUsage[proxy] = (proxyUsage[proxy] || 0) + 1;
@@ -581,11 +581,10 @@ async function executeTask(channel) {
   if (proxy !== "local") options.httpsAgent = getCachedAgent(proxy);
 
   try {
-    // 💡 JITTER: Thêm độ trễ ngẫu nhiên (0 - 600ms) mô phỏng người dùng thật
     await new Promise((resolve) => setTimeout(resolve, Math.random() * 600));
 
     const res = await axios.get(
-      `https://www.tiktok.com/${channel.username}/live`,
+      `https://www.tiktok.com/@${channel.username}/live`,
       options,
     );
 
@@ -602,30 +601,57 @@ async function executeTask(channel) {
 
     let status = "OFFLINE";
     if (res.status === 200) {
+      const html = res.data;
+
+      // 1. Phân biệt chính xác CAPTCHA (Bị chặn thật sự)
       if (
-        res.data.includes("<title>Verification</title>") ||
-        res.data.includes("Please confirm you are human")
-      )
+        html.includes("<title>Verification</title>") ||
+        html.includes("Please confirm you are human")
+      ) {
         throw new Error("TIKTOK_BLOCK");
+      }
+
+      // 2. Nhận diện kênh 18+ (Bắt đăng nhập xác nhận tuổi)
+      const finalUrl =
+        res.request?.res?.responseUrl || res.request?.responseURL || "";
+      const isLoginRedirect = finalUrl.includes("/login");
+      const isAgeRestricted =
+        html.includes("age_restricted") ||
+        html.toLowerCase().includes("verify your age") ||
+        html.toLowerCase().includes("xác nhận tuổi") ||
+        html.toLowerCase().includes("log in to verify");
+
+      // 3. Phân loại trạng thái
       if (
-        res.data.includes('"status":2') ||
-        res.data.includes('"roomStatus":2') ||
-        res.data.includes('"is_live":true') ||
-        res.data.includes('"isLive":true')
-      )
+        html.includes('"status":2') ||
+        html.includes('"roomStatus":2') ||
+        html.includes('"is_live":true') ||
+        html.includes('"isLive":true')
+      ) {
         status = "LIVE";
+      } else if (isLoginRedirect || isAgeRestricted) {
+        // Kênh bị gắn mác 18+, Axios không thể nhìn xuyên qua tường đăng nhập
+        // -> Chuyển sang chế độ "BLIND_TEST" (Thử mù bằng Socket)
+        status = "BLIND_TEST";
+      }
     }
 
-    masterSocket.emit("radar_result", { channel, status });
-
     if (status === "LIVE") {
+      masterSocket.emit("radar_result", { channel, status: "LIVE" }); // Báo ngay cho Master
       delete proxyFailCount[proxy];
       delete proxyCooldown[proxy];
       if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
-      startWebcast(channel, proxy, ua);
+      startWebcast(channel, proxy, ua, false);
+    } else if (status === "BLIND_TEST") {
+      // 💡 KHÔNG gửi radar_result vội, để startWebcast tự cắm Socket rồi mới phán xử
+      delete proxyFailCount[proxy];
+      delete proxyCooldown[proxy];
+      if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
+      startWebcast(channel, proxy, ua, true); // Chuyền cờ isBlindTest = true
     } else {
+      masterSocket.emit("radar_result", { channel, status });
       pendingChecks.delete(channel.username);
-      stopWebcast(channel.username);
+      sendWorkerStatus();
     }
   } catch (e) {
     if (proxy !== "local") {
@@ -676,8 +702,8 @@ async function executeTask(channel) {
         });
     }
     pendingChecks.delete(channel.username);
-    masterSocket.emit("radar_result", { channel, status: "ERROR" });
-    stopWebcast(channel.username);
+    masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
+    sendWorkerStatus();
   }
 }
 
