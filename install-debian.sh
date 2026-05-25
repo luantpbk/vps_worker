@@ -3,7 +3,7 @@
 set -e
 
 echo "=============================="
-echo " TikTok Debian Worker Install "
+echo " TikTok Worker Installer PRO "
 echo "=============================="
 
 WORKER_NAME="$1"
@@ -20,58 +20,60 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ==========================================
-# UPDATE SYSTEM (skip safe)
+# SAFE APT FIX (CRITICAL)
+# ==========================================
+
+echo "=== Fix APT / NodeSource conflicts ==="
+
+rm -f /etc/apt/sources.list.d/nodesource.list
+rm -f /etc/apt/sources.list.d/node*.list
+rm -f /etc/apt/keyrings/nodesource.gpg
+rm -f /usr/share/keyrings/nodesource.gpg
+
+apt clean || true
+
+# ==========================================
+# SYSTEM UPDATE (SAFE)
 # ==========================================
 
 echo "=== System update ==="
 
-apt update -y
-
-if ! dpkg -s curl >/dev/null 2>&1; then
-    apt install -y curl
-else
-    echo "[OK] curl already installed"
-fi
+apt update -y || {
+    echo "[WARN] apt update failed, retrying..."
+    apt --fix-missing update -y || true
+}
 
 # ==========================================
-# BASIC PACKAGES
+# BASE PACKAGES (SKIP IF EXISTS)
 # ==========================================
 
-PACKAGES=(wget git nano ca-certificates gnupg)
+PACKAGES=(curl wget git nano ca-certificates gnupg)
 
 for pkg in "${PACKAGES[@]}"; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
         echo "[INSTALL] $pkg"
         apt install -y "$pkg"
     else
-        echo "[OK] $pkg already installed"
+        echo "[OK] $pkg exists"
     fi
 done
 
 # ==========================================
-# NODEJS CHECK
+# NODEJS INSTALL (SAFE + NO DUPLICATE)
 # ==========================================
 
 if command -v node >/dev/null 2>&1; then
-    echo "[OK] Node already installed: $(node -v)"
+    echo "[OK] Node exists: $(node -v)"
 else
     echo "=== Install NodeJS 20 ==="
 
     mkdir -p /etc/apt/keyrings
 
-    if [ ! -f /etc/apt/keyrings/nodesource.gpg ]; then
-        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-    else
-        echo "[OK] NodeSource key exists"
-    fi
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
 
-    if [ ! -f /etc/apt/sources.list.d/nodesource.list ]; then
-        echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
-        > /etc/apt/sources.list.d/nodesource.list
-    else
-        echo "[OK] NodeSource repo exists"
-    fi
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list
 
     apt update -y
     apt install -y nodejs
@@ -81,69 +83,71 @@ echo "Node: $(node -v)"
 echo "NPM: $(npm -v)"
 
 # ==========================================
-# CLONE SOURCE
+# WORKER SYNC (PRO GIT MODE)
 # ==========================================
 
-echo "=== Clone source ==="
+echo "=== Worker sync ==="
 
-if [ -d "/root/worker/.git" ]; then
-    echo "[OK] Repo exists -> pulling updates"
+if [ -d "/root/worker" ]; then
+    echo "[OK] Worker exists -> updating"
+
     cd /root/worker
-    git pull
+
+    if [ -d ".git" ]; then
+        git fetch origin || true
+        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
+        git clean -fd
+    else
+        cd /root
+        rm -rf worker
+        git clone https://github.com/luantpbk/vps_worker.git /root/worker
+        cd /root/worker
+    fi
 else
-    rm -rf /root/worker
     git clone https://github.com/luantpbk/vps_worker.git /root/worker
     cd /root/worker
 fi
 
 # ==========================================
-# NPM INSTALL (skip if node_modules exists)
+# NPM INSTALL (SMART)
 # ==========================================
 
 if [ -d "node_modules" ]; then
     echo "[OK] node_modules exists -> skip npm install"
 else
-    echo "=== Install npm packages ==="
     npm install
 fi
 
 # ==========================================
-# WORKER NAME UPDATE
+# CONFIG UPDATE
 # ==========================================
 
-echo "=== Update workerName ==="
+echo "=== Config worker ==="
 
-sed -i "s/\"workerName\": *\"Worker_01\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json
+sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json || true
 
-# ==========================================
-# ENV FILE
-# ==========================================
-
-echo "=== Create .env ==="
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
 # ==========================================
-# PM2 CHECK
+# PM2 INSTALL CHECK
 # ==========================================
 
-if command -v pm2 >/dev/null 2>&1; then
-    echo "[OK] PM2 already installed"
-else
-    echo "=== Install PM2 ==="
+if ! command -v pm2 >/dev/null 2>&1; then
     npm install -g pm2
+else
+    echo "[OK] PM2 exists"
 fi
 
 # ==========================================
-# START WORKER
+# START WORKER (CLEAN RESTART)
 # ==========================================
 
-echo "=== Start worker ==="
+echo "=== Restart worker ==="
 
-pm2 describe worker >/dev/null 2>&1 && pm2 delete worker || true
-
+pm2 delete worker || true
 pm2 start vps_worker.js --name worker
 pm2 save
-pm2 startup systemd -u root --hp /root
+pm2 startup systemd -u root --hp /root || true
 
 # ==========================================
 # DONE
