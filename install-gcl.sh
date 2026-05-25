@@ -3,7 +3,7 @@
 set -e
 
 echo "=============================="
-echo " TikTok VPS Worker Installer "
+echo " TikTok Worker GCloud Install "
 echo "=============================="
 
 WORKER_NAME="$1"
@@ -11,62 +11,64 @@ ENV_CONTENT="$2"
 
 if [ -z "$WORKER_NAME" ] || [ -z "$ENV_CONTENT" ]; then
     echo "Usage:"
-    echo "bash install-ubuntu.sh <worker_name> <socket_secret>"
+    echo "bash install-gcl.sh <worker_name> <socket_secret>"
     exit 1
 fi
 
 # ==========================================
-# ROOT CHECK
+# GCLOUD SHELL SAFE MODE
 # ==========================================
 
 if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root"
-    exit 1
+    SUDO="sudo"
+else
+    SUDO=""
 fi
 
-# ==========================================
-# SAFE APT FIX
-# ==========================================
-
-echo "=== Fix APT / NodeSource conflicts ==="
-
-rm -f /etc/apt/sources.list.d/nodesource.list
-rm -f /etc/apt/sources.list.d/node*.list
-rm -f /etc/apt/keyrings/nodesource.gpg
-rm -f /usr/share/keyrings/nodesource.gpg
-
-apt clean || true
+WORKER_DIR="$HOME/worker"
 
 # ==========================================
-# SYSTEM UPDATE
+# FIX APT / NODE CONFLICT
 # ==========================================
 
-echo "=== System update ==="
+echo "=== Fix APT conflicts ==="
 
-apt update -y || {
-    echo "[WARN] apt update failed, retrying..."
-    apt --fix-missing update -y || true
+$SUDO rm -f /etc/apt/sources.list.d/nodesource.list || true
+$SUDO rm -f /etc/apt/sources.list.d/node*.list || true
+$SUDO rm -f /etc/apt/keyrings/nodesource.gpg || true
+$SUDO rm -f /usr/share/keyrings/nodesource.gpg || true
+
+$SUDO apt clean || true
+
+# ==========================================
+# UPDATE SYSTEM
+# ==========================================
+
+echo "=== Update system ==="
+
+$SUDO apt update -y || {
+    echo "[WARN] apt update failed"
 }
 
 # ==========================================
 # INSTALL BASE PACKAGES
 # ==========================================
 
-echo "=== Install base packages ==="
+echo "=== Install packages ==="
 
 PACKAGES=(curl wget git nano ca-certificates gnupg)
 
 for pkg in "${PACKAGES[@]}"; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
         echo "[INSTALL] $pkg"
-        apt install -y "$pkg"
+        $SUDO apt install -y "$pkg"
     else
         echo "[OK] $pkg exists"
     fi
 done
 
 # ==========================================
-# INSTALL NODEJS 20
+# NODEJS INSTALL
 # ==========================================
 
 if command -v node >/dev/null 2>&1; then
@@ -74,16 +76,16 @@ if command -v node >/dev/null 2>&1; then
 else
     echo "=== Install NodeJS 20 ==="
 
-    mkdir -p /etc/apt/keyrings
+    $SUDO mkdir -p /etc/apt/keyrings
 
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    | gpg --dearmor | $SUDO tee /etc/apt/keyrings/nodesource.gpg >/dev/null
 
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
-    > /etc/apt/sources.list.d/nodesource.list
+    | $SUDO tee /etc/apt/sources.list.d/nodesource.list >/dev/null
 
-    apt update -y
-    apt install -y nodejs
+    $SUDO apt update -y
+    $SUDO apt install -y nodejs
 fi
 
 echo "Node: $(node -v)"
@@ -95,24 +97,24 @@ echo "NPM: $(npm -v)"
 
 echo "=== Worker sync ==="
 
-if [ -d "~/worker" ]; then
+if [ -d "$WORKER_DIR" ]; then
     echo "[OK] Worker exists -> updating"
 
-    cd ~/worker
+    cd "$WORKER_DIR"
 
     if [ -d ".git" ]; then
         git fetch origin || true
         git reset --hard origin/main 2>/dev/null || git reset --hard origin/master
         git clean -fd
     else
-        cd ~
+        cd "$HOME"
         rm -rf worker
-        git clone https://github.com/luantpbk/vps_worker.git ~/worker
-        cd ~/worker
+        git clone https://github.com/luantpbk/vps_worker.git "$WORKER_DIR"
+        cd "$WORKER_DIR"
     fi
 else
-    git clone https://github.com/luantpbk/vps_worker.git ~/worker
-    cd ~/worker
+    git clone https://github.com/luantpbk/vps_worker.git "$WORKER_DIR"
+    cd "$WORKER_DIR"
 fi
 
 # ==========================================
@@ -128,7 +130,7 @@ else
 fi
 
 # ==========================================
-# UPDATE CONFIG
+# CONFIG UPDATE
 # ==========================================
 
 echo "=== Config worker ==="
@@ -138,7 +140,7 @@ sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
 # ==========================================
-# INSTALL PM2
+# PM2 INSTALL
 # ==========================================
 
 echo "=== Check PM2 ==="
@@ -156,10 +158,10 @@ fi
 echo "=== Restart worker ==="
 
 pm2 delete worker || true
+
 pm2 start vps_worker.js --name worker
 
 pm2 save
-pm2 startup systemd -u root --hp ~ || true
 
 # ==========================================
 # DONE
