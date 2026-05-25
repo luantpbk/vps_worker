@@ -46,7 +46,7 @@ let proxyUsage = {};
 let proxyFailCount = {};
 let proxyCooldown = {};
 let proxyHealth = {};
-let pendingChecks = new Map(); // 💡 FIX: Dùng Map lưu Timestamp để chống kẹt vĩnh viễn
+let pendingChecks = new Map();
 let masterSocket = null;
 
 let dynamicProxies = [];
@@ -86,7 +86,6 @@ if (config.useLocalNetwork) proxyUsage["local"] = 0;
 // ==========================================
 const ENABLE_DEBUG = process.env.DEBUG === "true";
 
-// 💡 FIX: Hàm bắn Log lên Master Dashboard
 function sendMasterLog(msg) {
   if (masterSocket && masterSocket.connected) {
     masterSocket.emit("worker_log", `[${config.workerName}] ${msg}`);
@@ -149,37 +148,44 @@ function sendWorkerStatus() {
     ];
 
     masterSocket.emit("worker_status", {
-      currentLoad: Object.keys(activeConnections).length + allPending.length,
+      currentLoad:
+        Object.keys(activeConnections).length +
+        pendingChecks.size +
+        localTaskQueue.length,
       runningChannels: Object.keys(activeConnections),
       pendingChannels: allPending,
     });
   }
 }
-setInterval(sendWorkerStatus, 30000);
+setInterval(sendWorkerStatus, 20000);
 
 async function checkProxyHealth() {
   let checkList = [...dynamicProxies];
   if (config.useLocalNetwork) checkList.unshift("local");
   let currentHealth = {};
 
-  const chunkSize = 5;
-  for (let i = 0; i < checkList.length; i += chunkSize) {
-    const chunk = checkList.slice(i, i + chunkSize);
-    await Promise.all(
-      chunk.map(async (p) => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+  await Promise.all(
+    checkList.map(async (p) => {
+      try {
+        if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) {
+          currentHealth[p] = {
+            status: `ĐANG NGHỈ LẠNH LẦN ${proxyFailCount[p] || 1}`,
+            ip: "Đã ẩn để tiết kiệm",
+          };
+          return;
+        }
 
-        try {
-          let options = { signal: controller.signal };
+        // 💡 FIX: Rút ngắn timeout ping proxy xuống 4s để check nhanh hơn
+        let options = { timeout: 4000 };
 
-          if (p !== "local") {
-            const proxyAgent = getCachedAgent(p);
-            options.httpAgent = proxyAgent;
-            options.httpsAgent = proxyAgent;
-          }
+        if (p !== "local") {
+          const proxyAgent = getCachedAgent(p);
+          options.httpAgent = proxyAgent;
+          options.httpsAgent = proxyAgent;
+        }
 
-          if (!proxyGeoData[p]) {
+        if (!proxyGeoData[p]) {
+          try {
             const geoRes = await axios.get(
               "http://ip-api.com/json/?fields=countryCode",
               options,
@@ -187,73 +193,66 @@ async function checkProxyHealth() {
             if (geoRes.data && geoRes.data.countryCode)
               proxyGeoData[p] = geoRes.data.countryCode;
             else proxyGeoData[p] = "VN";
-          }
-
-          const healthRes = await axios.get(
-            "https://clients3.google.com/generate_204",
-            options,
-          );
-          clearTimeout(timeoutId);
-
-          if (healthRes.status === 204) {
-            if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) {
-              currentHealth[p] = {
-                status: `NGHỈ LẦN ${proxyFailCount[p] || 1}`,
-                ip: "Đã ẩn để tiết kiệm",
-              };
-            } else {
-              currentHealth[p] = {
-                status: "SẴN SÀNG",
-                ip: "Đã ẩn để tiết kiệm",
-              };
-            }
-          } else {
-            throw new Error("Lỗi Ping");
-          }
-        } catch (e) {
-          clearTimeout(timeoutId);
-          currentHealth[p] = { status: "MẤT KẾT NỐI", ip: "N/A" };
-
-          if (p !== "local") {
-            proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
-            if (proxyFailCount[p] >= 3) {
-              logError(
-                `🚫 Proxy ${p.split("@").pop()} đứt Ping 3 lần. Xin Master đổi mới.`,
-              );
-              currentHealth[p].status = "BÁO LỖI";
-              if (masterSocket && masterSocket.connected) {
-                masterSocket.emit("worker_report_dead_proxy", {
-                  proxy: p,
-                  workerName: config.workerName,
-                });
-              }
-              dynamicProxies = dynamicProxies.filter((dp) => dp !== p);
-              delete proxyHealth[p];
-              delete proxyUsage[p];
-              delete proxyFailCount[p];
-              delete proxyCooldown[p];
-            } else {
-              proxyCooldown[p] = Date.now() + 60000;
-            }
+          } catch (e) {
+            proxyGeoData[p] = "VN"; // Default nếu check IP lỗi
           }
         }
-      }),
-    );
-  }
+
+        const healthRes = await axios.get(
+          "https://clients3.google.com/generate_204",
+          options,
+        );
+
+        if (healthRes.status === 204) {
+          currentHealth[p] = {
+            status: "SẴN SÀNG",
+            ip: "Đã ẩn để tiết kiệm",
+          };
+        } else {
+          throw new Error("Lỗi Ping");
+        }
+      } catch (e) {
+        currentHealth[p] = { status: "MẤT KẾT NỐI", ip: "N/A" };
+
+        if (p !== "local") {
+          proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
+          if (proxyFailCount[p] >= 3) {
+            logError(
+              `🚫 Proxy ${p.split("@").pop()} đứt Ping 3 lần. Xin Master đổi mới.`,
+            );
+            currentHealth[p].status = "BÁO LỖI";
+            if (masterSocket && masterSocket.connected) {
+              masterSocket.emit("worker_report_dead_proxy", {
+                proxy: p,
+                workerName: config.workerName,
+              });
+            }
+            dynamicProxies = dynamicProxies.filter((dp) => dp !== p);
+            delete proxyHealth[p];
+            delete proxyUsage[p];
+            delete proxyFailCount[p];
+            delete proxyCooldown[p];
+          } else {
+            proxyCooldown[p] = Date.now() + 30000; // Nghỉ 30s
+          }
+        }
+      }
+    }),
+  );
 
   proxyHealth = currentHealth;
 
-  let aliveProxiesCount = 0;
-  let isLocalAlive = false;
-  for (let p in proxyHealth) {
-    if (proxyHealth[p].status === "SẴN SÀNG") {
-      if (p === "local") isLocalAlive = true;
-      else aliveProxiesCount++;
+  let aliveCount =
+    config.useLocalNetwork && proxyHealth["local"]?.status === "SẴN SÀNG"
+      ? config.localLoad
+      : 0;
+  for (let p of dynamicProxies) {
+    if (proxyHealth[p]?.status === "SẴN SÀNG") {
+      aliveCount += config.loadPerProxy;
     }
   }
-  currentDynamicMaxLoad =
-    aliveProxiesCount * config.loadPerProxy +
-    (isLocalAlive ? config.localLoad || config.loadPerProxy : 0);
+
+  currentDynamicMaxLoad = aliveCount;
   if (masterSocket && masterSocket.connected) {
     masterSocket.emit("worker_update_capacity", {
       maxLoad: currentDynamicMaxLoad,
@@ -267,17 +266,17 @@ setTimeout(checkProxyHealth, 2000);
 // HELPER FUNCTIONS (Tài nguyên)
 // ==========================================
 function getNextAvailableProxy() {
-  let allProxies = [...dynamicProxies];
-  const now = Date.now();
-  if (config.useLocalNetwork) allProxies.unshift("local");
+  let allProxies = config.useLocalNetwork
+    ? ["local", ...dynamicProxies]
+    : [...dynamicProxies];
   if (allProxies.length === 0) return null;
+  const now = Date.now();
 
   for (let i = 0; i < allProxies.length; i++) {
     let p = allProxies[proxyIndex];
     proxyIndex = (proxyIndex + 1) % allProxies.length;
 
-    const isCoolingDown = proxyCooldown[p] && now < proxyCooldown[p];
-    if (isCoolingDown) continue;
+    if (proxyCooldown[p] && now < proxyCooldown[p]) continue;
 
     if (proxyCooldown[p] && now >= proxyCooldown[p]) {
       delete proxyCooldown[p];
@@ -329,8 +328,10 @@ function getCachedAgent(proxyUrl) {
     else proxyUrl = `http://${proxyUrl}`;
   }
   if (!agentCache[proxyUrl]) {
+    // 💡 FIX: Tắt keepAlive để Node dọn sạch các connection chết
     agentCache[proxyUrl] = new HttpsProxyAgent(proxyUrl, {
-      keepAlive: true,
+      keepAlive: false,
+      rejectUnauthorized: false,
       ciphers:
         "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384",
       secureProtocol: "TLS_client_method",
@@ -507,20 +508,14 @@ function connectToMaster() {
 setInterval(async () => {
   if (localTaskQueue.length === 0) return;
 
-  let aliveIPs = 0;
-  for (let p in proxyHealth) {
-    if (proxyHealth[p].status === "SẴN SÀNG") aliveIPs++;
-  }
-
   const totalProcessing =
     Object.keys(activeConnections).length + pendingChecks.size;
   const availableSlots = currentDynamicMaxLoad - totalProcessing;
 
   if (availableSlots <= 0) return;
 
-  // 💡 FIX BỘ LỌC TẢI: Tính toán toán học chặt chẽ để không kéo dư kênh
-  const speed = Math.max(1, aliveIPs * 4); // Mỗi Proxy test 4 kênh / giây
-  const tasksToProcess = Math.min(speed, availableSlots, localTaskQueue.length);
+  // 💡 FIX BỘ LỌC TẢI: Xử lý tối đa 5 kênh 1 giây để chống Proxy Rate Limit
+  const tasksToProcess = Math.min(5, availableSlots, localTaskQueue.length);
 
   for (let i = 0; i < tasksToProcess; i++) {
     const channel = localTaskQueue.shift();
@@ -528,9 +523,14 @@ setInterval(async () => {
   }
 }, 1000);
 
-const BASE_HEADERS = {
-  Accept: "text/html,application/xhtml+xml",
-  "Accept-Language": "en-US,en;q=0.5",
+// 💡 FIX CỰC QUAN TRỌNG: Hàm Hard Timeout ép chết các request Axios bị treo do Proxy
+const fetchWithTimeout = (url, options, timeoutMs = 8000) => {
+  return Promise.race([
+    axios.get(url, options),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("HARD_TIMEOUT")), timeoutMs),
+    ),
+  ]);
 };
 
 async function executeTask(channel) {
@@ -540,38 +540,36 @@ async function executeTask(channel) {
   )
     return;
 
-  const totalProcessing =
-    Object.keys(activeConnections).length + pendingChecks.size;
-  if (totalProcessing >= currentDynamicMaxLoad) {
-    return masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
-  }
-
-  // 💡 FIX: Sử dụng Date.now() để Map lưu được thời gian bắt đầu
-  pendingChecks.set(channel.username, Date.now());
-
   const proxy = getNextAvailableProxy();
   if (!proxy) {
-    pendingChecks.delete(channel.username);
     return masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
   }
 
+  pendingChecks.set(channel.username, Date.now());
   proxyUsage[proxy] = (proxyUsage[proxy] || 0) + 1;
   assignedProxies[channel.username] = proxy;
 
   const ua = getNextUA();
   let options = {
-    headers: { ...BASE_HEADERS, "User-Agent": ua },
-    timeout: 10000,
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.5",
+      "User-Agent": ua,
+      "Accept-Encoding": "gzip, deflate", // Giải quyết vấn đề nghẽn băng thông RAM
+    },
     validateStatus: () => true,
   };
+
   if (proxy !== "local") options.httpsAgent = getCachedAgent(proxy);
 
   try {
     await new Promise((resolve) => setTimeout(resolve, Math.random() * 300));
 
-    const res = await axios.get(
+    // 💡 FIX: Sử dụng fetchWithTimeout với 8s max
+    const res = await fetchWithTimeout(
       `https://www.tiktok.com/@${channel.username}/live`,
       options,
+      8000,
     );
 
     if (res.status === 407 || res.status === 502 || res.status === 503)
@@ -579,7 +577,6 @@ async function executeTask(channel) {
 
     if (res.status === 404) {
       masterSocket.emit("radar_result", { channel, status: "NOT_FOUND" });
-      pendingChecks.delete(channel.username);
       stopWebcast(channel.username);
       return;
     }
@@ -619,9 +616,7 @@ async function executeTask(channel) {
     }
 
     if (status === "LIVE" || status === "BLIND_TEST") {
-      if (status === "LIVE") {
-        masterSocket.emit("radar_result", { channel, status: "LIVE" });
-      }
+      masterSocket.emit("radar_result", { channel, status: "LIVE" }); // Báo LIVE luôn
 
       delete proxyFailCount[proxy];
       delete proxyCooldown[proxy];
@@ -630,13 +625,13 @@ async function executeTask(channel) {
       startWebcast(channel, proxy, ua, status === "BLIND_TEST");
     } else {
       masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
-      pendingChecks.delete(channel.username);
       stopWebcast(channel.username);
     }
   } catch (e) {
     if (proxy !== "local") {
       const isNetworkError =
         e.message === "PROXY_DEAD" ||
+        e.message === "HARD_TIMEOUT" ||
         e.code === "ECONNREFUSED" ||
         e.code === "ETIMEDOUT" ||
         e.message.includes("timeout") ||
@@ -661,13 +656,13 @@ async function executeTask(channel) {
           delete proxyFailCount[proxy];
           delete proxyCooldown[proxy];
         } else {
-          proxyCooldown[proxy] = Date.now() + 60000;
+          proxyCooldown[proxy] = Date.now() + 30000;
           if (proxyHealth[proxy])
             proxyHealth[proxy].status =
               `MẤT KẾT NỐI (${proxyFailCount[proxy]}/3)`;
         }
       } else {
-        proxyCooldown[proxy] = Date.now() + 180000;
+        proxyCooldown[proxy] = Date.now() + 60000;
         if (proxyHealth[proxy])
           proxyHealth[proxy].status = "TikTok chặn tạm thời";
       }
@@ -686,9 +681,11 @@ async function executeTask(channel) {
       }
     }
 
-    pendingChecks.delete(channel.username);
     masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
     stopWebcast(channel.username);
+  } finally {
+    // 💡 FIX: Xóa cờ kiểm tra trong finally để giải phóng Slot cho kênh khác
+    pendingChecks.delete(channel.username);
   }
 }
 
@@ -712,6 +709,7 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
   const currentCountry = proxyGeoData[proxy] || "VN";
   const geo = getGeoParams(currentCountry);
 
+  // 💡 FIX: Cung cấp đầy đủ params để vượt rào Tiktok WebSocket
   let conn = new WebcastPushConnection(channel.username, {
     signApiKey: key,
     requestOptions: reqOptions,
@@ -721,6 +719,9 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       webcast_language: geo.lang,
       region: geo.region,
       sys_region: geo.region,
+      browser_name: "Mozilla",
+      browser_online: true,
+      timezone_name: "Asia/Ho_Chi_Minh",
     },
   });
 
@@ -752,7 +753,6 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
     .connect()
     .then((state) => {
       activeConnections[channel.username] = conn;
-      pendingChecks.delete(channel.username);
 
       if (isBlindTest) {
         masterSocket.emit("radar_result", { channel, status: "LIVE" });
@@ -804,7 +804,6 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
     })
     .catch((err) => {
       checkAndReportDeadKey(err, key);
-      pendingChecks.delete(channel.username);
 
       const errMsg = String(err).toLowerCase();
       let realStatus = "REQUEUE";
@@ -820,7 +819,6 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
         realStatus = "ERROR";
       }
 
-      // 💡 Bắn Log lỗi thẳng lên bảng điều khiển Master để phân tích
       sendMasterLog(
         `[SOCKET ĐỨT] @${channel.username} | IP: ${proxy === "local" ? "VPS" : proxy.split("@").pop()} | Lỗi: ${err.message}`,
       );
@@ -832,8 +830,13 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
 
 function stopWebcast(user) {
   if (activeConnections[user]) {
-    activeConnections[user].removeAllListeners();
-    activeConnections[user].disconnect();
+    try {
+      activeConnections[user].removeAllListeners();
+      activeConnections[user].disconnect();
+      // 💡 FIX: Ép clear client socket tránh leak memory khi kết nối rớt đột ngột
+      if (activeConnections[user].client)
+        activeConnections[user].client.destroy();
+    } catch (e) {}
     delete activeConnections[user];
   }
   if (assignedProxies[user]) {
@@ -842,6 +845,7 @@ function stopWebcast(user) {
       proxyUsage[realProxy] = Math.max(0, proxyUsage[realProxy] - 1);
     delete assignedProxies[user];
   }
+  pendingChecks.delete(user);
 }
 
 let configReloadTimer = null;
@@ -956,7 +960,6 @@ setInterval(() => {
     const lastActivity =
       conn.wsClient?.lastActivity || conn.wsClient?.connectionTime || now;
     if (now - lastActivity > 180000) {
-      // 3 phút
       stopWebcast(user);
       masterSocket.emit("radar_result", {
         channel: { username: user },
@@ -968,21 +971,20 @@ setInterval(() => {
     }
   }
 
-  // 2. 💡 FIX: Dọn dẹp các truy vấn HTTP / Socket Handshake kẹt (Không Resolve cũng không Reject)
+  // 2. Dọn dẹp các truy vấn HTTP / Socket kẹt cứng
   for (let [user, timestamp] of pendingChecks.entries()) {
-    if (now - timestamp > 45000) {
-      // 45 giây
-      pendingChecks.delete(user);
+    if (now - timestamp > 30000) {
+      // Quá 30s mà Axios/Webcast ko lên tiếng thì diệt
       stopWebcast(user);
       masterSocket.emit("radar_result", {
         channel: { username: user },
         status: "REQUEUE",
       });
       sendMasterLog(
-        `[DỌN RÁC] 🧹 Truy vấn @${user} kẹt mạng 45s. Đã reset Slot Proxy!`,
+        `[DỌN RÁC] 🧹 Truy vấn @${user} kẹt mạng > 30s. Đã giải phóng Slot!`,
       );
     }
   }
-}, 60000);
+}, 30000);
 
 connectToMaster();
