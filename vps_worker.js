@@ -514,8 +514,7 @@ setInterval(async () => {
 
   if (availableSlots <= 0) return;
 
-  // 💡 FIX BỘ LỌC TẢI: Xử lý tối đa 5 kênh 1 giây để chống Proxy Rate Limit
-  const tasksToProcess = Math.min(5, availableSlots, localTaskQueue.length);
+  const tasksToProcess = Math.min(availableSlots, localTaskQueue.length);
 
   for (let i = 0; i < tasksToProcess; i++) {
     const channel = localTaskQueue.shift();
@@ -567,7 +566,7 @@ async function executeTask(channel) {
 
     // 💡 FIX: Sử dụng fetchWithTimeout với 8s max
     const res = await fetchWithTimeout(
-      `https://www.tiktok.com/@${channel.username}/live`,
+      `https://www.tiktok.com/${channel.username}/live`,
       options,
       8000,
     );
@@ -696,7 +695,7 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
     headers: {
       "User-Agent": ua,
       Origin: "https://www.tiktok.com",
-      Referer: `https://www.tiktok.com/@${channel.username}/live`,
+      Referer: `https://www.tiktok.com/${channel.username}/live`,
     },
   };
 
