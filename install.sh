@@ -37,11 +37,11 @@ apt install -y nodejs
 
 echo "=== Clone source ==="
 
-rm -rf /root/tiktok_worker
+rm -rf /root/worker
 
-git clone https://github.com/luantpbk/vps_worker.git /root/tiktok_worker
+git clone https://github.com/luantpbk/vps_worker.git /root/worker
 
-cd /root/tiktok_worker
+cd /root/worker
 
 echo "=== Install npm packages ==="
 
@@ -61,9 +61,9 @@ npm install -g pm2
 
 echo "=== Start worker ==="
 
-pm2 delete tiktok_worker || true
+pm2 delete worker || true
 
-pm2 start vps_worker.js --name "tiktok_worker" -i 2
+pm2 start vps_worker.js --name "worker"
 
 pm2 save
 
