@@ -514,7 +514,11 @@ setInterval(async () => {
 
   if (availableSlots <= 0) return;
 
-  const tasksToProcess = Math.min(availableSlots, localTaskQueue.length);
+  const tasksToProcess = Math.min(
+    dynamicProxies.length,
+    availableSlots,
+    localTaskQueue.length,
+  );
 
   for (let i = 0; i < tasksToProcess; i++) {
     const channel = localTaskQueue.shift();
