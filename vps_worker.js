@@ -505,20 +505,43 @@ function connectToMaster() {
 // ==========================================
 setInterval(async () => {
   if (localTaskQueue.length === 0) return;
+  const totalSockets = Object.keys(activeConnections).length;
 
-  const totalProcessing =
-    Object.keys(activeConnections).length + pendingChecks.size;
-  const availableSlots = currentDynamicMaxLoad - totalProcessing;
+  // 1. NẾU WORKER ĐÃ ĐẦY ẮP SOCKET -> Nhả toàn bộ Queue về Master cho máy khác xử lý
+  if (totalSockets >= currentDynamicMaxLoad && currentDynamicMaxLoad > 0) {
+    while (localTaskQueue.length > 0) {
+      const c = localTaskQueue.shift();
+      masterSocket.emit("radar_result", { channel: c, status: "REQUEUE" });
+    }
+    return;
+  }
 
-  if (availableSlots <= 0) return;
+  // 2. TÍNH SỨC CHỨA CHECK HTTP ĐỘC LẬP
+  // 1 Proxy gánh 4 request check cùng lúc là cực kỳ an toàn, không lo Rate Limit
+  const proxyCount = config.useLocalNetwork
+    ? dynamicProxies.length + 1
+    : dynamicProxies.length;
+  const maxConcurrentChecks = Math.max(10, proxyCount * 4);
+  const availableCheckSlots = maxConcurrentChecks - pendingChecks.size;
 
-  const tasksToProcess = Math.min(3, availableSlots, localTaskQueue.length);
+  if (availableCheckSlots <= 0) return;
+
+  // 3. RẢI ĐINH REQUEST (Chống DDoS TikTok)
+  // Bốc tối đa 10 kênh/giây để hệ thống luôn mượt mà
+  const tasksToProcess = Math.min(
+    10,
+    availableCheckSlots,
+    localTaskQueue.length,
+  );
 
   for (let i = 0; i < tasksToProcess; i++) {
     const channel = localTaskQueue.splice(0, 1)[0];
+    pendingChecks.set(channel.username, Date.now()); // Giữ chỗ slot HTTP
+
+    // Rải đều thời gian bắn request ngẫu nhiên trong 1 giây để "tàng hình" trước WAF
     setTimeout(() => {
       executeTask(channel);
-    }, Math.random() * 3000);
+    }, Math.random() * 1000);
   }
 }, 1000);
 
@@ -586,7 +609,6 @@ async function checkLiveStatus(username, proxy, ua) {
 
   let options = {
     headers: dynamicHeaders,
-    timeout: 8000,
     validateStatus: () => true,
   };
 
@@ -595,9 +617,10 @@ async function checkLiveStatus(username, proxy, ua) {
   const urlUsername = username.startsWith("@") ? username : `@${username}`;
 
   // Sử dụng axios trực tiếp thay vì fetchWithTimeout để lấy được res.request.res.responseUrl chuẩn xác
-  const res = await axios.get(
+  const res = await fetchWithTimeout(
     `https://www.tiktok.com/${urlUsername}/live`,
     options,
+    8000,
   );
 
   // 1. Xử lý lỗi Proxy chết cứng
@@ -655,28 +678,35 @@ async function checkLiveStatus(username, proxy, ua) {
 }
 
 async function executeTask(channel) {
-  if (
-    activeConnections[channel.username] ||
-    pendingChecks.has(channel.username)
-  )
+  if (activeConnections[channel.username]) {
+    pendingChecks.delete(channel.username);
     return;
+  }
 
-  const proxy = getNextAvailableProxy();
-  if (!proxy) {
+  // 💡 TỐI ƯU ĐỘT PHÁ: Lấy ngẫu nhiên 1 Proxy khỏe để Check HTTP (KHÔNG CHIẾM SLOT)
+  let availableProxies = config.useLocalNetwork ? ["local"] : [];
+  for (let p of dynamicProxies) {
+    if (
+      proxyHealth[p]?.status === "SẴN SÀNG" &&
+      (!proxyCooldown[p] || Date.now() > proxyCooldown[p])
+    ) {
+      availableProxies.push(p);
+    }
+  }
+
+  if (availableProxies.length === 0) {
+    pendingChecks.delete(channel.username);
     return masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
   }
 
-  pendingChecks.set(channel.username, Date.now());
-  proxyUsage[proxy] = (proxyUsage[proxy] || 0) + 1;
-  assignedProxies[channel.username] = proxy;
-
+  // Chọn 1 proxy ngẫu nhiên để san sẻ tải nhẹ nhàng
+  const checkProxy =
+    availableProxies[Math.floor(Math.random() * availableProxies.length)];
   const ua = getNextUA();
 
   try {
-    await new Promise((resolve) => setTimeout(resolve, Math.random() * 1000));
-
     // Gọi hàm check đã được tối ưu hóa
-    const status = await checkLiveStatus(channel.username, proxy, ua);
+    const status = await checkLiveStatus(channel.username, checkProxy, ua);
 
     // Xử lý luồng theo trạng thái trả về
     if (status === "NOT_FOUND") {
@@ -686,20 +716,33 @@ async function executeTask(channel) {
     }
 
     if (status === "LIVE" || status === "BLIND_TEST") {
+      // 💡 KÊNH ĐANG LIVE -> BÂY GIỜ MỚI THỰC SỰ ĐÒI SLOT ĐỂ CẮM SOCKET
+      const socketProxy = getNextAvailableProxy();
+      if (!socketProxy) {
+        // Rủi ro cắm full tải đúng lúc phát hiện Live -> Trả kênh về Master
+        masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
+        return;
+      }
+
       masterSocket.emit("radar_result", { channel, status: "LIVE" }); // Báo LIVE luôn
 
-      delete proxyFailCount[proxy];
-      delete proxyCooldown[proxy];
-      if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
+      delete proxyFailCount[socketProxy];
+      delete proxyCooldown[socketProxy];
+      if (proxyHealth[socketProxy])
+        proxyHealth[socketProxy].status = "SẴN SÀNG";
+      // Chính thức cắm cờ ghi nhận tải cho Proxy
+      proxyUsage[socketProxy] = (proxyUsage[socketProxy] || 0) + 1;
+      assignedProxies[channel.username] = socketProxy;
 
-      startWebcast(channel, proxy, ua, status === "BLIND_TEST");
+      // Chỉ tốn Euler Key ở bước này
+      startWebcast(channel, socketProxy, ua, status === "BLIND_TEST");
     } else {
       masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
       stopWebcast(channel.username);
     }
   } catch (e) {
-    // Chỉ xử lý phạt proxy khi thực sự là lỗi mạng (Network Error)
-    if (proxy !== "local") {
+    // 💡 FIX LỖI CRASH: Sử dụng biến checkProxy thay vì proxy ở khối này
+    if (checkProxy !== "local") {
       const isNetworkError =
         e.message === "PROXY_DEAD" ||
         e.code === "ECONNREFUSED" ||
@@ -708,34 +751,15 @@ async function executeTask(channel) {
         (e.message && e.message.includes("socket"));
 
       if (isNetworkError) {
-        proxyFailCount[proxy] = (proxyFailCount[proxy] || 0) + 1;
-        if (proxyFailCount[proxy] >= 3) {
-          logError(
-            `🚫 Proxy ${proxy.split("@").pop()} đứt mạng 3 lần. Xin Master đổi mới...`,
-          );
-          if (proxyHealth[proxy]) proxyHealth[proxy].status = "BÁO LỖI";
-          if (masterSocket && masterSocket.connected) {
-            masterSocket.emit("worker_report_dead_proxy", {
-              proxy: proxy,
-              workerName: config.workerName,
-            });
-          }
-          dynamicProxies = dynamicProxies.filter((dp) => dp !== proxy);
-          delete proxyHealth[proxy];
-          delete proxyUsage[proxy];
-          delete proxyFailCount[proxy];
-          delete proxyCooldown[proxy];
-        } else {
-          proxyCooldown[proxy] = Date.now() + 30000;
-          if (proxyHealth[proxy])
-            proxyHealth[proxy].status =
-              `MẤT KẾT NỐI (${proxyFailCount[proxy]}/3)`;
-        }
+        // Chỉ phạt nghỉ ngơi 30 giây (Cooldown), KHÔNG xóa proxy
+        proxyCooldown[checkProxy] = Date.now() + 30000;
+        if (proxyHealth[checkProxy])
+          proxyHealth[checkProxy].status = "Lag mạng (Nghỉ 30s)";
       } else {
-        // Lỗi khác (không phải mạng) -> Chỉ cho nghỉ tạm 1 phút
-        proxyCooldown[proxy] = Date.now() + 60000;
-        if (proxyHealth[proxy])
-          proxyHealth[proxy].status = "TikTok chặn tạm thời";
+        // Bị WAF / TikTok chặn -> Phạt nghỉ 1 phút
+        proxyCooldown[checkProxy] = Date.now() + 60000;
+        if (proxyHealth[checkProxy])
+          proxyHealth[checkProxy].status = "TikTok chặn tạm thời";
       }
 
       // Cập nhật lại sức chứa
@@ -774,7 +798,7 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
   };
   let wsOptions = {
     headers: {
-      ...dynamicHeaders,
+      "User-Agent": ua,
       Origin: "https://www.tiktok.com",
       Referer: `https://www.tiktok.com/${channel.username}/live`,
     },
