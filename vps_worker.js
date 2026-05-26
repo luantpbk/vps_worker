@@ -786,21 +786,25 @@ async function executeTask(channel) {
 
 function startWebcast(channel, proxy, ua, isBlindTest = false) {
   const key = getNextEulerKey();
-  // 💡 GỌI HÀM SINH HEADER ĐỘNG ĐỂ KHỚP VỚI UA
   const dynamicHeaders = buildDynamicHeaders(ua);
 
-  // Ép bộ Header xịn này vào Request HTTP của thư viện (Bước 1)
+  // Dọn dẹp dấu @ thừa để đảm bảo URL luôn đúng chuẩn
+  const cleanUser = channel.username.replace(/@/g, "");
+
+  // 1. HTTP REQUEST (Bước lấy Token)
   let reqOptions = {
     headers: {
       ...dynamicHeaders,
-      Referer: `https://www.tiktok.com/${channel.username}/live`,
+      Referer: `https://www.tiktok.com/@${cleanUser}/live`,
     },
   };
+
+  // 2. WEBSOCKET REQUEST (Chỉ dùng header cơ bản)
   let wsOptions = {
     headers: {
       "User-Agent": ua,
       Origin: "https://www.tiktok.com",
-      Referer: `https://www.tiktok.com/${channel.username}/live`,
+      Referer: `https://www.tiktok.com/@${cleanUser}/live`,
     },
   };
 
@@ -813,7 +817,6 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
   const currentCountry = proxyGeoData[proxy] || "VN";
   const geo = getGeoParams(currentCountry);
 
-  // 💡 FIX: Cung cấp đầy đủ params để vượt rào Tiktok WebSocket
   let conn = new WebcastPushConnection(channel.username, {
     signApiKey: key,
     requestOptions: reqOptions,
@@ -828,58 +831,55 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
 
   let currentViewers = 0;
 
-  const checkAndReportDeadKey = (err, key) => {
-    if (!key) return;
-    // 💡 1. BÓC TÁCH LỖI AN TOÀN TRƯỚC KHI QUÉT TỪ KHÓA
+  const checkAndReportDeadKey = (errObj, targetKey) => {
+    if (!targetKey) return false;
+
+    // 💡 BÓC TÁCH LỖI CHỐNG TRỐNG CHO HÀM CHECK KEY
     let errText = "unknown error";
-    if (typeof err === "string") {
-      errText = err;
-    } else if (err instanceof Error) {
-      errText = err.message || String(err);
-    } else if (err && typeof err === "object") {
-      try {
-        // Ép JSON để moi đoạn Payload {"code":401,"message":"..."} ra ngoài
-        errText = JSON.stringify(err);
-      } catch (e) {
-        errText = "Unparseable Object";
+    if (errObj) {
+      if (typeof errObj === "string") errText = errObj;
+      else if (errObj.message) errText = errObj.message;
+      else {
+        try {
+          errText = JSON.stringify(errObj);
+          if (errText === "{}" || errText === "[]") errText = errObj.toString();
+        } catch (e) {}
       }
     }
 
     const msg = String(errText).toLowerCase();
-    // 1. LOẠI TRỪ NGAY các lỗi do TikTok chặn hoặc nghẽn mạng (False Positives)
+
     if (
       msg.includes("rate limit") ||
       msg.includes("too many requests") ||
       msg.includes("timeout") ||
       msg.includes("socket")
     ) {
-      return false; // Bỏ qua, đây không phải lỗi do Key
+      return false;
     }
 
-    // 3. BẮT CHÍNH XÁC TỪ KHÓA TỪ EULER API HOẶC THƯ VIỆN
     const isDeadKey =
-      msg.includes("insufficient balance") || // Hết tiền
-      msg.includes("quota") || // Hết lượt
-      msg.includes("invalid api key") || // Sai key
-      msg.includes("unauthorized") || // Không có quyền
-      msg.includes("key expired") || // Key hết hạn
-      msg.includes("forbidden") || // Bị khóa
-      msg.includes("sign error") || // 💡 MỚI: Bắt lỗi Sign Error của thư viện
-      msg.includes("status 401"); // 💡 MỚI: Bắt HTTP 401 Unauthorized
+      msg.includes("insufficient balance") ||
+      msg.includes("quota") ||
+      msg.includes("invalid api key") ||
+      msg.includes("unauthorized") ||
+      msg.includes("key expired") ||
+      msg.includes("forbidden") ||
+      msg.includes("sign error") ||
+      msg.includes("status 401");
 
     if (isDeadKey) {
       logError(
-        `🔑 Key Euler [${key.substring(0, 8)}...] lỗi/hết lượt. Đang xin Master cấp mới...`,
+        `🔑 Key Euler [${targetKey.substring(0, 8)}...] lỗi/hết lượt. Xin Master cấp mới...`,
       );
       if (masterSocket && masterSocket.connected) {
         masterSocket.emit("worker_report_dead_key", {
-          key: key,
+          key: targetKey,
           workerName: config.workerName,
         });
       }
       return true;
     }
-
     return false;
   };
 
@@ -891,7 +891,8 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
   Promise.race([connectPromise, timeoutPromise])
     .then((state) => {
       activeConnections[channel.username] = conn;
-      activeConnections[channel.username].lastActive = Date.now(); // Phục vụ Zombie Killer
+      activeConnections[channel.username].lastActive = Date.now();
+
       if (isBlindTest) {
         masterSocket.emit("radar_result", { channel, status: "LIVE" });
         logSuccess(
@@ -951,43 +952,80 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
     .catch((err) => {
       const isDeadKey = checkAndReportDeadKey(err, key);
 
-      // 💡 1. BÓC TÁCH LỖI THẬT: Xử lý triệt để vụ "Tự động ngắt kết nối"
+      // 💡 BÓC TÁCH LỖI CHỐNG TRỐNG (Khắc phục lỗi "")
       let realErrorStr = "Lỗi không xác định";
-      if (typeof err === "string") {
-        realErrorStr = err;
-      } else if (err instanceof Error) {
-        realErrorStr = err.message;
-      } else if (err && typeof err === "object") {
-        try {
-          realErrorStr = JSON.stringify(err);
-        } catch (e) {
-          realErrorStr = "Không thể đọc lỗi Object";
+      if (err) {
+        if (typeof err === "string") {
+          realErrorStr = err;
+        } else if (err.message) {
+          realErrorStr = err.message;
+        } else {
+          try {
+            realErrorStr = JSON.stringify(err);
+            if (realErrorStr === "{}" || realErrorStr === "[]")
+              realErrorStr = err.toString();
+          } catch (e) {
+            realErrorStr = "Không thể đọc lỗi Object";
+          }
         }
       }
-      const errMsg = String(realErrorStr).toLowerCase();
 
+      if (!realErrorStr || realErrorStr.trim() === "") {
+        realErrorStr = "Lỗi ngầm từ thư viện proxy (Empty Error)";
+      }
+
+      const errMsg = String(realErrorStr).toLowerCase();
       let realStatus = "REQUEUE";
 
-      // Phân loại lỗi tĩnh (Kênh ảo, vừa sập live, tàng hình) - Không in đỏ
       if (
         errMsg.includes("not found") ||
         errMsg.includes("offline") ||
-        errMsg.includes("isn't online") || // Bắt lỗi bạn vừa báo
+        errMsg.includes("isn't online") ||
         errMsg.includes("ended") ||
         errMsg.includes("room_id")
       ) {
         realStatus = "OFFLINE";
         logInfo(`Kênh ${channel.username} vừa tắt live hoặc ẩn danh.`);
       }
-      // Phân loại lỗi mạng / Proxy treo - Cần báo động
-      else if (errMsg.includes("socket_timeout")) {
+      // 💡 BỘ LỌC ĐÃ ĐƯỢC BỔ SUNG LẠI Ở ĐÂY (Sửa lỗi reading status)
+      else if (
+        errMsg.includes("socket_timeout") ||
+        errMsg.includes("reading 'status'") ||
+        errMsg.includes("properties of undefined") ||
+        errMsg.includes("network") ||
+        errMsg.includes("econnrefused") ||
+        errMsg.includes("socket hang up") ||
+        errMsg.includes("502") ||
+        errMsg.includes("503")
+      ) {
         logWarn(
-          `[KẸT SOCKET] ${channel.username} đứt bắt tay. Trả về hàng đợi.`,
+          `[KẸT SOCKET] ${channel.username} đứt bắt tay do Proxy lag. Trả về hàng đợi.`,
         );
+
+        // CƠ CHẾ PHẠT PROXY NGHỈ 60 GIÂY
+        if (proxy !== "local") {
+          proxyCooldown[proxy] = Date.now() + 60000;
+          if (proxyHealth[proxy])
+            proxyHealth[proxy].status = "Nghỉ do lag Socket";
+
+          let aliveCount = 0;
+          let localAlive = proxyHealth["local"]?.status === "SẴN SÀNG";
+          for (let p in proxyHealth) {
+            if (p !== "local" && proxyHealth[p].status === "SẴN SÀNG")
+              aliveCount++;
+          }
+          currentDynamicMaxLoad =
+            aliveCount * config.loadPerProxy +
+            (localAlive ? config.localLoad : 0);
+          if (masterSocket && masterSocket.connected) {
+            masterSocket.emit("worker_update_capacity", {
+              maxLoad: currentDynamicMaxLoad,
+            });
+          }
+        }
       } else if (errMsg.includes("suspended") || errMsg.includes("banned")) {
         realStatus = "ERROR";
       } else if (!isDeadKey) {
-        // 💡 2. IN RA LỖI THẬT TRÊN CONSOLE MASTER
         sendMasterLog(
           `[SOCKET ĐỨT] @${channel.username} tại ${config.workerName} | Lỗi: ${realErrorStr}`,
         );
