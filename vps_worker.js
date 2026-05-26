@@ -45,21 +45,22 @@ let assignedProxies = {};
 let proxyUsage = {};
 let proxyFailCount = {};
 let proxyCooldown = {};
+let proxyStrikeCount = {}; // Theo dõi số lần bị gậy của từng Proxy
 let proxyHealth = {};
+let proxyCookies = {};
 let pendingChecks = new Map();
 let masterSocket = null;
 
 let dynamicProxies = [];
 let exclusiveEulerKeys = [];
 
-let proxyIndex = 0,
-  uaIndex = 0,
+let uaIndex = 0,
   keyIndex = 0;
 const agentCache = {};
 let proxyGeoData = {};
 
 let localTaskQueue = [];
-let nextSocketConnectTime = 0;
+let proxyNextSocketTime = {};
 
 // 💡 TỪ ĐIỂN TỰ ĐỘNG MAP QUỐC GIA SANG NGÔN NGỮ
 function getGeoParams(countryCode) {
@@ -89,7 +90,7 @@ const ENABLE_DEBUG = process.env.DEBUG === "true";
 
 function sendMasterLog(msg) {
   if (masterSocket && masterSocket.connected) {
-    masterSocket.emit("worker_log", `[${config.workerName}] ${msg}`);
+    masterSocket.emit("worker_log", `${msg}`);
   }
 }
 
@@ -279,7 +280,8 @@ function getNextAvailableProxy() {
   let available = allProxies.filter((p) => {
     // Bỏ qua nếu đang bị phạt nghỉ
     if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) return false;
-
+    // 2. 💡 BỔ SUNG: Bỏ qua nếu Proxy dính >= 4 gậy (Đang chờ giải cứu / Nghỉ hưu)
+    if (p !== "local" && proxyStrikeCount[p] >= 4) return false;
     const isReady = p === "local" || proxyHealth[p]?.status === "SẴN SÀNG";
     const limit =
       p === "local"
@@ -328,10 +330,24 @@ function getCachedAgent(proxyUrl) {
     else proxyUrl = `http://${proxyUrl}`;
   }
   if (!agentCache[proxyUrl]) {
+    // Xáo trộn Ciphers để giả lập nhiều trình duyệt/phiên bản khác nhau
+    const baseCiphers = [
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "TLS_AES_128_GCM_SHA256",
+      "ECDHE-RSA-AES128-GCM-SHA256",
+      "ECDHE-ECDSA-AES128-GCM-SHA256",
+      "ECDHE-RSA-AES256-GCM-SHA384",
+    ];
+    // Đảo ngẫu nhiên thứ tự mảng
+    const randomizedCiphers = baseCiphers
+      .sort(() => Math.random() - 0.5)
+      .join(":");
     agentCache[proxyUrl] = new HttpsProxyAgent(proxyUrl, {
       keepAlive: true,
-      ciphers:
-        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384",
+      keepAliveMsecs: 30000,
+      rejectUnauthorized: false,
+      ciphers: randomizedCiphers,
       secureProtocol: "TLS_client_method",
       secureOptions: crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT,
     });
@@ -436,6 +452,9 @@ function connectToMaster() {
     delete proxyGeoData[deadProxy];
     delete proxyFailCount[deadProxy];
     delete proxyCooldown[deadProxy];
+    // Thêm dòng này:
+    if (proxyNextSocketTime) delete proxyNextSocketTime[deadProxy];
+    if (proxyCookies[deadProxy]) delete proxyCookies[deadProxy];
     // Thêm dòng này để dọn RAM
     if (agentCache[deadProxy]) delete agentCache[deadProxy];
     if (newProxy) {
@@ -446,6 +465,24 @@ function connectToMaster() {
       }
     }
     checkProxyHealth();
+  });
+
+  masterSocket.on("worker_proxy_rescued", (data) => {
+    const { proxy, newCookies } = data;
+
+    if (dynamicProxies.includes(proxy)) {
+      // Cứu thành công! Xóa tội cho Proxy
+      proxyStrikeCount[proxy] = 0;
+      proxyCooldown[proxy] = 0;
+      if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
+
+      // Lưu Cookie sạch vào bộ nhớ (Bạn cần khai báo let proxyCookies = {} ở đầu file)
+      proxyCookies[proxy] = newCookies;
+
+      logSuccess(
+        `🦸‍♂️ Master đã giải cứu thành công Proxy ${proxy.split("@").pop()}!`,
+      );
+    }
   });
 
   masterSocket.on("sync_vulkan", (data) => {
@@ -520,12 +557,17 @@ setInterval(async () => {
   // 💡 BỔ SUNG CẢM BIẾN KẸT XE (CHỐNG TRÀN HÀNG ĐỢI SOCKET)
   // ========================================================
   const now = Date.now();
-  const socketQueueDelay = nextSocketConnectTime - now;
+  let maxQueueDelay = 0;
 
-  // Nếu đang có quá nhiều kênh xếp hàng chờ cắm Socket (VD: Đang chờ > 8 giây ~ 4 kênh)
-  // -> Ngừng bốc thêm kênh mới để đi Check HTTP, nhường CPU cho việc cắm Socket.
-  if (socketQueueDelay > 8000) {
-    return; // Đợi Socket giải tỏa bớt rồi mới chạy tiếp
+  // Tìm Proxy đang bị kẹt hàng đợi cắm Socket lâu nhất
+  for (let p in proxyNextSocketTime) {
+    const delay = proxyNextSocketTime[p] - now;
+    if (delay > maxQueueDelay) maxQueueDelay = delay;
+  }
+  // Nếu có bất kỳ Proxy nào đang phải xếp hàng đợi cắm quá 10 giây (tương đương 4 kênh dồn cục)
+  // -> Tạm ngưng bốc thêm kênh đi check HTTP để tránh Crash RAM và bị TikTok đánh gậy IP
+  if (maxQueueDelay > 10000) {
+    return;
   }
   // ========================================================
   // 2. TÍNH SỨC CHỨA CHECK HTTP ĐỘC LẬP
@@ -618,7 +660,10 @@ function buildDynamicHeaders(ua) {
 
 async function checkLiveStatus(username, proxy, ua) {
   const dynamicHeaders = buildDynamicHeaders(ua);
-
+  // 💡 BỔ SUNG: Chèn Cookie đã giải cứu vào Request (nếu có)
+  if (proxy !== "local" && proxyCookies[proxy]) {
+    dynamicHeaders["Cookie"] = proxyCookies[proxy];
+  }
   let options = {
     headers: dynamicHeaders,
     validateStatus: () => true,
@@ -757,19 +802,23 @@ async function executeTask(channel) {
       // 💡 TỐI ƯU: XẾP HÀNG CẮM SOCKET CHỐNG BÃO (ANTI-BURST)
       // ========================================================
       const now = Date.now();
-      if (nextSocketConnectTime < now) {
-        nextSocketConnectTime = now;
+      // Nếu Proxy này chưa có lịch sử cắm, hoặc đã cắm xong các lệnh trước đó
+      if (
+        !proxyNextSocketTime[socketProxy] ||
+        proxyNextSocketTime[socketProxy] < now
+      ) {
+        proxyNextSocketTime[socketProxy] = now;
       }
-
-      const delay = nextSocketConnectTime - now;
-
-      // Cứ mỗi kênh được phát hiện Live, ép nó phải chờ thêm 2000ms (2 giây) so với kênh trước
-      // -> Tốc độ cắm tối đa: 30 kênh / Phút -> Tuyệt đối an toàn trước TikTok!
-      nextSocketConnectTime += 2000;
+      // Tính thời gian độ trễ riêng cho Proxy này
+      const delay = proxyNextSocketTime[socketProxy] - now;
+      // Cứ mỗi kênh LIVE dồn vào Proxy này, Proxy này bị ép chờ thêm 2500ms (2.5 giây).
+      // Các Proxy khác không bị ảnh hưởng.
+      // -> Đảm bảo an toàn tuyệt đối với WAF của TikTok trên từng IP.
+      proxyNextSocketTime[socketProxy] += 2500;
 
       setTimeout(() => {
         // Cắm Socket chuẩn sau khi đã chờ tới lượt
-        startWebcast(channel, socketProxy, ua, false);
+        startWebcast(channel, socketProxy, ua);
       }, delay);
       // ========================================================
     } else {
@@ -829,11 +878,15 @@ async function executeTask(channel) {
 
 function startWebcast(channel, proxy, ua) {
   const key = getNextEulerKey();
-  const dynamicHeaders = buildDynamicHeaders(ua);
 
   // Dọn dẹp dấu @ thừa để đảm bảo URL luôn đúng chuẩn
   const cleanUser = channel.username.replace(/@/g, "");
-
+  const dynamicHeaders = buildDynamicHeaders(ua);
+  // 💡 TÌM COOKIE GIẢI CỨU CỦA PROXY NÀY
+  let customCookie = "";
+  if (proxy !== "local" && proxyCookies[proxy]) {
+    customCookie = proxyCookies[proxy];
+  }
   // 1. HTTP REQUEST (Bước lấy Token)
   let reqOptions = {
     headers: {
@@ -841,7 +894,8 @@ function startWebcast(channel, proxy, ua) {
       Referer: `https://www.tiktok.com/@${cleanUser}/live`,
     },
   };
-
+  // 💡 NHÉT COOKIE VÀO HTTP REQUEST
+  if (customCookie) reqOptions.headers["Cookie"] = customCookie;
   // 2. WEBSOCKET REQUEST (Chỉ dùng header cơ bản)
   let wsOptions = {
     headers: {
@@ -850,7 +904,8 @@ function startWebcast(channel, proxy, ua) {
       Referer: `https://www.tiktok.com/@${cleanUser}/live`,
     },
   };
-
+  // 💡 NHÉT COOKIE VÀO WEBSOCKET
+  if (customCookie) wsOptions.headers["Cookie"] = customCookie;
   if (proxy !== "local") {
     const agent = getCachedAgent(proxy);
     reqOptions.httpsAgent = agent;
@@ -936,10 +991,8 @@ function startWebcast(channel, proxy, ua) {
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
 
-      logSuccess(
-        `Cắm Socket thành công ${channel.username} - ${config.workerName}`,
-      );
-
+      logSuccess(`Cắm Socket thành công ${channel.username}`);
+      proxyStrikeCount[proxy] = 0; // Reset án phạt khi cắm Live thành công
       conn.on("warn", (err) => checkAndReportDeadKey(err, key));
       conn.on("error", (err) => checkAndReportDeadKey(err, key));
 
@@ -1033,37 +1086,46 @@ function startWebcast(channel, proxy, ua) {
         errMsg.includes("too many connections") || // 💡 BỔ SUNG: Bắt lỗi kết nối dồn dập
         errMsg.includes("rate limited")
       ) {
-        logWarn(
-          `[KẸT SOCKET] ${channel.username} đứt bắt tay do Proxy lag. Trả về hàng đợi.`,
-        );
+        logWarn(`[KẸT SOCKET] ${channel.username} | Lỗi: ${errMsg}`);
 
-        // CƠ CHẾ PHẠT PROXY NGHỈ 60 GIÂY
+        // CƠ CHẾ PHẠT LŨY TIẾN (EXPONENTIAL BACKOFF)
         if (proxy !== "local") {
-          proxyCooldown[proxy] = Date.now() + 60000;
-          if (proxyHealth[proxy])
-            proxyHealth[proxy].status = "Nghỉ do lag Socket";
+          proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
+          let strikes = proxyStrikeCount[proxy];
 
-          let aliveCount = 0;
-          let localAlive = proxyHealth["local"]?.status === "SẴN SÀNG";
-          for (let p in proxyHealth) {
-            if (p !== "local" && proxyHealth[p].status === "SẴN SÀNG")
-              aliveCount++;
-          }
-          currentDynamicMaxLoad =
-            aliveCount * config.loadPerProxy +
-            (localAlive ? config.localLoad : 0);
-          if (masterSocket && masterSocket.connected) {
-            masterSocket.emit("worker_update_capacity", {
-              maxLoad: currentDynamicMaxLoad,
-            });
+          let penaltyMinutes = 1;
+          if (strikes === 2) penaltyMinutes = 5;
+          else if (strikes === 3) penaltyMinutes = 15;
+
+          if (strikes < 4) {
+            // Phạt nghỉ bình thường
+            proxyCooldown[proxy] = Date.now() + penaltyMinutes * 60 * 1000;
+            if (proxyHealth[proxy])
+              proxyHealth[proxy].status = `Bị chặn (Nghỉ ${penaltyMinutes}p)`;
+          } else {
+            // 💡 TỪ GẬY THỨ 4: ĐÓNG BĂNG NHẬN TASK MỚI VÀ KÊU GỌI GIẢI CỨU
+            if (proxyHealth[proxy])
+              proxyHealth[proxy].status = `🔴 CHỜ GIẢI CỨU CAPTCHA`;
+
+            // Phát tín hiệu về Master kèm theo Proxy và UA hiện tại để Master mở trình duyệt
+            if (masterSocket && masterSocket.connected) {
+              masterSocket.emit("worker_request_rescue", {
+                proxy: proxy,
+                userAgent: getNextUA(),
+                workerName: config.workerName,
+                activeConnectionsCount: proxyUsage[proxy] || 0, // Báo cho admin biết đang ôm bao nhiêu Socket
+              });
+              logWarn(
+                `🚨 Báo động Master: Proxy ${proxy.split("@").pop()} cần giải cứu Captcha! Đang duy trì ${proxyUsage[proxy] || 0} kết nối.`,
+              );
+            }
           }
         }
       } else if (errMsg.includes("suspended") || errMsg.includes("banned")) {
         realStatus = "ERROR";
+        logWarn(`[ERROR SOCKET] ${channel.username} | Lỗi: ${errMsg}`);
       } else if (!isDeadKey) {
-        sendMasterLog(
-          `[SOCKET ĐỨT] ${channel.username}-${config.workerName}|Lỗi: ${realErrorStr}`,
-        );
+        sendMasterLog(`[SOCKET ĐỨT] ${channel.username}|Lỗi: ${realErrorStr}`);
       }
 
       masterSocket.emit("radar_result", { channel, status: realStatus });
@@ -1229,6 +1291,28 @@ setInterval(() => {
         status: "REQUEUE",
       });
       sendMasterLog(`[DỌN RÁC] 🧹 Truy vấn git ${user} kẹt mạng > 30s!`);
+    }
+  }
+
+  // 3. 💡 TỰ HỦY PROXY NGHỈ HƯU ĐÃ VẮT KIỆT TẢI
+  for (let p of dynamicProxies) {
+    if (proxyStrikeCount[p] >= 4) {
+      const currentTension = proxyUsage[p] || 0;
+      if (currentTension === 0) {
+        // Proxy đã dính gậy nặng, Admin chưa kịp giải cứu, và giờ đã hết sạch Socket đang cắm
+        // -> Đã đến lúc trảm để xin proxy mới.
+        logError(
+          `☠️ Proxy ${p.split("@").pop()} đã hết phiên làm việc và không được giải cứu. Khai tử!`,
+        );
+        if (masterSocket && masterSocket.connected) {
+          masterSocket.emit("worker_report_dead_proxy", {
+            proxy: p,
+            workerName: config.workerName,
+          });
+        }
+        // Reset để tránh gửi lệnh spam (sẽ bị xóa hẳn ở hàm worker_proxy_replacement)
+        proxyStrikeCount[p] = -999;
+      }
     }
   }
 }, 30000);
