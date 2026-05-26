@@ -482,6 +482,7 @@ function connectToMaster() {
       logSuccess(
         `🦸‍♂️ Master đã giải cứu thành công Proxy ${proxy.split("@").pop()}!`,
       );
+      masterSocket.emit("worker_rescue_success", proxy);
     }
   });
 
@@ -814,7 +815,7 @@ async function executeTask(channel) {
       // Cứ mỗi kênh LIVE dồn vào Proxy này, Proxy này bị ép chờ thêm 2500ms (2.5 giây).
       // Các Proxy khác không bị ảnh hưởng.
       // -> Đảm bảo an toàn tuyệt đối với WAF của TikTok trên từng IP.
-      proxyNextSocketTime[socketProxy] += 2500;
+      proxyNextSocketTime[socketProxy] += 3000;
 
       setTimeout(() => {
         // Cắm Socket chuẩn sau khi đã chờ tới lượt
@@ -902,6 +903,10 @@ function startWebcast(channel, proxy, ua) {
       "User-Agent": ua,
       Origin: "https://www.tiktok.com",
       Referer: `https://www.tiktok.com/@${cleanUser}/live`,
+      "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+      "Sec-WebSocket-Extensions": "permessage-deflate; client_max_window_bits",
     },
   };
   // 💡 NHÉT COOKIE VÀO WEBSOCKET
@@ -991,7 +996,9 @@ function startWebcast(channel, proxy, ua) {
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
 
-      logSuccess(`Cắm Socket thành công ${channel.username}`);
+      logSuccess(
+        `[${config.workerName}] Cắm Socket thành công ${channel.username}`,
+      );
       proxyStrikeCount[proxy] = 0; // Reset án phạt khi cắm Live thành công
       conn.on("warn", (err) => checkAndReportDeadKey(err, key));
       conn.on("error", (err) => checkAndReportDeadKey(err, key));
