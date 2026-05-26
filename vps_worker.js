@@ -320,7 +320,7 @@ function getCachedAgent(proxyUrl) {
   if (!proxyUrl.startsWith("http")) {
     const parts = proxyUrl.split(":");
     if (parts.length === 4)
-      proxyUrl = `http://${parts[2]}:${parts[3]}@${parts[0]}:${parts[1]}`;
+      proxyUrl = `http://${parts[2]}:${parts[3]}${parts[0]}:${parts[1]}`;
     else if (parts.length === 2) proxyUrl = `http://${parts[0]}:${parts[1]}`;
     else proxyUrl = `http://${proxyUrl}`;
   }
@@ -590,7 +590,7 @@ async function checkLiveStatus(username, proxy, ua) {
 
   if (proxy !== "local") options.httpsAgent = getCachedAgent(proxy);
 
-  const urlUsername = username.startsWith("@") ? username : `@${username}`;
+  const urlUsername = username.startsWith("@") ? username : `${username}`;
 
   // Sử dụng axios trực tiếp thay vì fetchWithTimeout để lấy được res.request.res.responseUrl chuẩn xác
   const res = await axios.get(
@@ -805,16 +805,27 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
   const checkAndReportDeadKey = (errText, targetKey) => {
     if (!targetKey) return;
     const msg = String(errText).toLowerCase();
+    // 1. LOẠI TRỪ NGAY các lỗi do TikTok chặn hoặc nghẽn mạng (False Positives)
     if (
-      msg.includes("limit") ||
-      msg.includes("quota") ||
-      msg.includes("api key") ||
-      msg.includes("euler") ||
-      msg.includes("balance")
+      msg.includes("rate limit") ||
+      msg.includes("too many requests") ||
+      msg.includes("timeout") ||
+      msg.includes("socket")
     ) {
-      logError(
-        `🔑 Key Euler [${targetKey.substring(0, 8)}...] đã kiệt sức! Báo cáo Master đổi mới...`,
-      );
+      return; // Bỏ qua, đây không phải lỗi do Key
+    }
+
+    // 2. BẮT CHÍNH XÁC các từ khóa trả về từ Server API (Euler) khi Key có vấn đề
+    const isDeadKey =
+      msg.includes("insufficient balance") || // Hết tiền
+      msg.includes("quota") || // Hết lượt
+      msg.includes("invalid api key") || // Sai key
+      msg.includes("unauthorized") || // Không có quyền
+      msg.includes("key expired") || // Key hết hạn
+      msg.includes("forbidden"); // Bị khóa
+
+    if (isDeadKey) {
+      logError(`🔑 Key Euler [${targetKey.substring(0, 8)}...] lỗi/hết lượt`);
       if (masterSocket && masterSocket.connected) {
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
@@ -835,11 +846,11 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       if (isBlindTest) {
         masterSocket.emit("radar_result", { channel, status: "LIVE" });
         logSuccess(
-          `🔞 Đâm mù thành công kênh bị chặn web [${channel.username}]. Đã cắm Socket!`,
+          `🔞 Đâm mù thành công ${channel.username} tại ${config.workerName}`,
         );
       } else {
         logSuccess(
-          `Đã cắm Socket thành công cho @${channel.username} | Proxy: ${proxy === "local" ? "Mạng VPS (Local)" : proxy.split("@").pop()} | Euler Key: ${key ? key.substring(0, 8) + "..." : "HẾT KEY DỰ TRỮ"}`,
+          `Đã cắm Socket thành công cho ${channel.username} tại ${config.workerName}`,
         );
       }
 
@@ -891,10 +902,21 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
     .catch((err) => {
       checkAndReportDeadKey(err, key);
 
-      // Chống lỗi undefined
-      const errMsg = String(
-        err?.message || err || "unknown error",
-      ).toLowerCase();
+      // 💡 1. BÓC TÁCH LỖI THẬT: Xử lý triệt để vụ "Tự động ngắt kết nối"
+      let realErrorStr = "Lỗi không xác định";
+      if (typeof err === "string") {
+        realErrorStr = err;
+      } else if (err instanceof Error) {
+        realErrorStr = err.message;
+      } else if (err && typeof err === "object") {
+        try {
+          realErrorStr = JSON.stringify(err);
+        } catch (e) {
+          realErrorStr = "Không thể đọc lỗi Object";
+        }
+      }
+      const errMsg = String(realErrorStr).toLowerCase();
+
       let realStatus = "REQUEUE";
 
       // Phân loại lỗi tĩnh (Kênh ảo, vừa sập live, tàng hình) - Không in đỏ
@@ -906,21 +928,19 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
         errMsg.includes("room_id")
       ) {
         realStatus = "OFFLINE";
-        logInfo(
-          `[CHUYỂN TRẠNG THÁI] Kênh @${channel.username} vừa tắt live hoặc ẩn danh.`,
-        );
+        logInfo(`Kênh ${channel.username} vừa tắt live hoặc ẩn danh.`);
       }
       // Phân loại lỗi mạng / Proxy treo - Cần báo động
       else if (errMsg.includes("socket_timeout")) {
         logWarn(
-          `[KẸT SOCKET] @${channel.username} đứt bắt tay. Trả về hàng đợi.`,
+          `[KẸT SOCKET] ${channel.username} đứt bắt tay. Trả về hàng đợi.`,
         );
       } else if (errMsg.includes("suspended") || errMsg.includes("banned")) {
         realStatus = "ERROR";
       } else {
-        // Chỉ in đỏ những lỗi thực sự không mong muốn
+        // 💡 2. IN RA LỖI THẬT TRÊN CONSOLE MASTER
         sendMasterLog(
-          `[SOCKET ĐỨT] @${channel.username} | IP: ${proxy === "local" ? "VPS" : proxy.split("@").pop()} | Lỗi: ${err?.message || "Tự động ngắt kết nối"}`,
+          `[SOCKET ĐỨT] @${channel.username} tại ${config.workerName} | Lỗi: ${realErrorStr}`,
         );
       }
 
@@ -1062,20 +1082,18 @@ logInfo("Đang khởi động Headless Worker...");
 setInterval(() => {
   const now = Date.now();
 
-  // 1. Dọn dẹp các Socket im lặng quá lâu (3 phút không có tương tác mạng)
+  // 1. Dọn dẹp các Socket im lặng quá lâu (6 phút không có tương tác mạng)
   for (let user in activeConnections) {
     const conn = activeConnections[user];
     const lastActivity = conn.lastActive || now;
 
-    if (now - lastActivity > 180000) {
+    if (now - lastActivity > 360000) {
       stopWebcast(user);
       masterSocket.emit("radar_result", {
         channel: { username: user },
         status: "REQUEUE",
       });
-      sendMasterLog(
-        `[DỌN RÁC] 🧹 Socket @${user} chết lâm sàng > 3 phút. Giải phóng Slot!`,
-      );
+      sendMasterLog(`[DỌN RÁC] 🧹 Socket ${user} chết lâm sàng > 6 phút!`);
     }
   }
 
@@ -1088,9 +1106,7 @@ setInterval(() => {
         channel: { username: user },
         status: "REQUEUE",
       });
-      sendMasterLog(
-        `[DỌN RÁC] 🧹 Truy vấn git ${user} kẹt mạng > 30s. Đã giải phóng Slot!`,
-      );
+      sendMasterLog(`[DỌN RÁC] 🧹 Truy vấn git ${user} kẹt mạng > 30s!`);
     }
   }
 }, 30000);
