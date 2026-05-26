@@ -804,18 +804,18 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
 
   let currentViewers = 0;
 
-  const checkAndReportDeadKey = (errText, targetKey) => {
-    if (!targetKey) return;
+  const checkAndReportDeadKey = (err, key) => {
+    if (!key) return;
     // 💡 1. BÓC TÁCH LỖI AN TOÀN TRƯỚC KHI QUÉT TỪ KHÓA
     let errText = "unknown error";
-    if (typeof errObj === "string") {
-      errText = errObj;
-    } else if (errObj instanceof Error) {
-      errText = errObj.message || String(errObj);
-    } else if (errObj && typeof errObj === "object") {
+    if (typeof err === "string") {
+      errText = err;
+    } else if (err instanceof Error) {
+      errText = err.message || String(err);
+    } else if (err && typeof err === "object") {
       try {
         // Ép JSON để moi đoạn Payload {"code":401,"message":"..."} ra ngoài
-        errText = JSON.stringify(errObj);
+        errText = JSON.stringify(err);
       } catch (e) {
         errText = "Unparseable Object";
       }
@@ -845,11 +845,11 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
 
     if (isDeadKey) {
       logError(
-        `🔑 Key Euler [${targetKey.substring(0, 8)}...] lỗi/hết lượt. Đang xin Master cấp mới...`,
+        `🔑 Key Euler [${key.substring(0, 8)}...] lỗi/hết lượt. Đang xin Master cấp mới...`,
       );
       if (masterSocket && masterSocket.connected) {
         masterSocket.emit("worker_report_dead_key", {
-          key: targetKey,
+          key: key,
           workerName: config.workerName,
         });
       }
