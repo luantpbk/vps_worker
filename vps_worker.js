@@ -179,7 +179,7 @@ async function checkProxyHealth() {
         }
 
         // 💡 FIX: Rút ngắn timeout ping proxy xuống 4s để check nhanh hơn
-        let options = { timeout: 4000 };
+        let options = { timeout: 8000 };
 
         if (p !== "local") {
           const proxyAgent = getCachedAgent(p);
@@ -555,7 +555,7 @@ function buildDynamicHeaders(ua) {
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none",
     "Sec-Fetch-User": "?1",
-    Range: "bytes=0-80000",
+    Range: "bytes=0-60000",
   };
 
   // Xác định Hệ điều hành (Platform)
@@ -584,13 +584,13 @@ async function checkLiveStatus(username, proxy, ua) {
 
   let options = {
     headers: dynamicHeaders,
-    timeout: 6000,
+    timeout: 8000,
     validateStatus: () => true,
   };
 
   if (proxy !== "local") options.httpsAgent = getCachedAgent(proxy);
 
-  const urlUsername = username.startsWith("@") ? username : `${username}`;
+  const urlUsername = username.startsWith("@") ? username : `@${username}`;
 
   // Sử dụng axios trực tiếp thay vì fetchWithTimeout để lấy được res.request.res.responseUrl chuẩn xác
   const res = await axios.get(
