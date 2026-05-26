@@ -172,7 +172,7 @@ async function checkProxyHealth() {
       try {
         if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) {
           currentHealth[p] = {
-            status: `ĐANG NGHỈ LẦN ${proxyFailCount[p] || 1}`,
+            status: `ĐANG NGHỈ ${proxyFailCount[p] || 1} LẦN`,
             ip: "Đã ẩn để tiết kiệm",
           };
           return;
@@ -517,19 +517,19 @@ setInterval(async () => {
   }
 
   // 2. TÍNH SỨC CHỨA CHECK HTTP ĐỘC LẬP
-  // 1 Proxy gánh 4 request check cùng lúc là cực kỳ an toàn, không lo Rate Limit
+  // 1 Proxy gánh 2 request check cùng lúc là cực kỳ an toàn, không lo Rate Limit
   const proxyCount = config.useLocalNetwork
     ? dynamicProxies.length + 1
     : dynamicProxies.length;
-  const maxConcurrentChecks = Math.max(10, proxyCount * 4);
+  const maxConcurrentChecks = proxyCount * 2;
   const availableCheckSlots = maxConcurrentChecks - pendingChecks.size;
 
   if (availableCheckSlots <= 0) return;
 
   // 3. RẢI ĐINH REQUEST (Chống DDoS TikTok)
-  // Bốc tối đa 10 kênh/giây để hệ thống luôn mượt mà
+  // Bốc tối đa số lượng proxy kênh/giây để hệ thống luôn mượt mà
   const tasksToProcess = Math.min(
-    10,
+    proxyCount,
     availableCheckSlots,
     localTaskQueue.length,
   );
@@ -538,10 +538,10 @@ setInterval(async () => {
     const channel = localTaskQueue.splice(0, 1)[0];
     pendingChecks.set(channel.username, Date.now()); // Giữ chỗ slot HTTP
 
-    // Rải đều thời gian bắn request ngẫu nhiên trong 1 giây để "tàng hình" trước WAF
+    // Rải đều thời gian bắn request ngẫu nhiên trong 2 giây để "tàng hình" trước WAF
     setTimeout(() => {
       executeTask(channel);
-    }, Math.random() * 1000);
+    }, Math.random() * 2000);
   }
 }, 1000);
 
@@ -633,7 +633,7 @@ async function checkLiveStatus(username, proxy, ua) {
 
   // 3. Bị chặn Rate Limit hoặc dính WAF
   if (res.status === 403 || res.status === 429 || res.status >= 500) {
-    return "BLIND_TEST";
+    return "RATE_LIMIT";
   }
 
   // 4. Bắt điều hướng (Redirect)
@@ -715,7 +715,15 @@ async function executeTask(channel) {
       return;
     }
 
-    if (status === "LIVE" || status === "BLIND_TEST") {
+    // 💡 KHÔI PHỤC TÍNH NĂNG ĐƯA VÀO HÀNG CHỜ TÁI KHÁM CỦA MASTER
+    if (status === "BLIND_TEST") {
+      // Trả đúng trạng thái BLIND_TEST về Master để đưa vào hàng chờ kiểm tra lại sau
+      masterSocket.emit("radar_result", { channel, status: "BLIND_TEST" });
+      stopWebcast(channel.username);
+      return;
+    }
+
+    if (status === "LIVE") {
       // 💡 KÊNH ĐANG LIVE -> BÂY GIỜ MỚI THỰC SỰ ĐÒI SLOT ĐỂ CẮM SOCKET
       const socketProxy = getNextAvailableProxy();
       if (!socketProxy) {
@@ -735,7 +743,7 @@ async function executeTask(channel) {
       assignedProxies[channel.username] = socketProxy;
 
       // Chỉ tốn Euler Key ở bước này
-      startWebcast(channel, socketProxy, ua, status === "BLIND_TEST");
+      startWebcast(channel, socketProxy, ua);
     } else {
       masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
       stopWebcast(channel.username);
@@ -750,16 +758,23 @@ async function executeTask(channel) {
         (e.message && e.message.includes("timeout")) ||
         (e.message && e.message.includes("socket"));
 
-      if (isNetworkError) {
-        // Chỉ phạt nghỉ ngơi 30 giây (Cooldown), KHÔNG xóa proxy
+      const isRateLimit = e.message === "RATE_LIMIT";
+
+      if (isRateLimit) {
+        // Bị TikTok đánh gậy 429 -> Phạt nghỉ 45s
+        proxyCooldown[checkProxy] = Date.now() + 45000;
+        if (proxyHealth[checkProxy])
+          proxyHealth[checkProxy].status = "TikTok chặn (Nghỉ 45s)";
+      } else if (isNetworkError) {
+        // Lỗi mạng thuần túy -> Phạt nhẹ 20s
+        proxyCooldown[checkProxy] = Date.now() + 20000;
+        if (proxyHealth[checkProxy])
+          proxyHealth[checkProxy].status = "Lag mạng (Nghỉ 20s)";
+      } else {
+        // Lỗi khác
         proxyCooldown[checkProxy] = Date.now() + 30000;
         if (proxyHealth[checkProxy])
-          proxyHealth[checkProxy].status = "Lag mạng (Nghỉ 30s)";
-      } else {
-        // Bị WAF / TikTok chặn -> Phạt nghỉ 1 phút
-        proxyCooldown[checkProxy] = Date.now() + 60000;
-        if (proxyHealth[checkProxy])
-          proxyHealth[checkProxy].status = "TikTok chặn tạm thời";
+          proxyHealth[checkProxy].status = "Lỗi HTTP (Nghỉ 30s)";
       }
 
       // Cập nhật lại sức chứa
@@ -784,7 +799,7 @@ async function executeTask(channel) {
   }
 }
 
-function startWebcast(channel, proxy, ua, isBlindTest = false) {
+function startWebcast(channel, proxy, ua) {
   const key = getNextEulerKey();
   const dynamicHeaders = buildDynamicHeaders(ua);
 
@@ -893,23 +908,12 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
 
-      if (isBlindTest) {
-        masterSocket.emit("radar_result", { channel, status: "LIVE" });
-        logSuccess(
-          `🔞 Đâm mù thành công ${channel.username} - ${config.workerName}`,
-        );
-      } else {
-        logSuccess(
-          `Cắm Socket thành công ${channel.username} - ${config.workerName}`,
-        );
-      }
+      logSuccess(
+        `Cắm Socket thành công ${channel.username} - ${config.workerName}`,
+      );
 
-      conn.on("warn", (err) => {
-        checkAndReportDeadKey(err, key);
-      });
-      conn.on("error", (err) => {
-        checkAndReportDeadKey(err, key);
-      });
+      conn.on("warn", (err) => checkAndReportDeadKey(err, key));
+      conn.on("error", (err) => checkAndReportDeadKey(err, key));
 
       conn.on("roomUser", (userData) => {
         if (activeConnections[channel.username])
