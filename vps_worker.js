@@ -1169,18 +1169,18 @@ logInfo("Đang khởi động Headless Worker...");
 setInterval(() => {
   const now = Date.now();
 
-  // 1. Dọn dẹp các Socket im lặng quá lâu (6 phút không có tương tác mạng)
+  // 1. Dọn dẹp các Socket im lặng quá lâu (30 phút không có tương tác mạng)
   for (let user in activeConnections) {
     const conn = activeConnections[user];
     const lastActivity = conn.lastActive || now;
 
-    if (now - lastActivity > 360000) {
+    if (now - lastActivity > 30 * 60 * 1000) {
       stopWebcast(user);
       masterSocket.emit("radar_result", {
         channel: { username: user },
         status: "REQUEUE",
       });
-      sendMasterLog(`[DỌN RÁC] 🧹 Socket ${user} chết lâm sàng > 6 phút!`);
+      sendMasterLog(`[DỌN RÁC] 🧹 Socket ${user} chết lâm sàng > 30 phút!`);
     }
   }
 
