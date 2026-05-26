@@ -628,7 +628,6 @@ async function checkLiveStatus(username, proxy, ua) {
 
   const urlUsername = username.startsWith("@") ? username : `@${username}`;
 
-  // Sử dụng axios trực tiếp thay vì fetchWithTimeout để lấy được res.request.res.responseUrl chuẩn xác
   const res = await fetchWithTimeout(
     `https://www.tiktok.com/${urlUsername}/live`,
     options,
@@ -671,20 +670,6 @@ async function checkLiveStatus(username, proxy, ua) {
     html.includes('id="verify-ele"') ||
     html.includes("age_restricted") ||
     html.includes("Please confirm you are human")
-  ) {
-    return "BLIND_TEST";
-  }
-
-  // ========================================================
-  // 💡 BỔ SUNG: BẮT KÊNH BỊ CẤM / RIÊNG TƯ (BLOCKED)
-  // ========================================================
-  const htmlLower = html.toLowerCase();
-  if (
-    htmlLower.includes("this account is private") ||
-    htmlLower.includes("account is private") ||
-    htmlLower.includes("account currently unavailable") ||
-    htmlLower.includes("account has been banned") ||
-    htmlLower.includes("suspended")
   ) {
     return "BLOCKED";
   }
