@@ -172,14 +172,14 @@ async function checkProxyHealth() {
       try {
         if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) {
           currentHealth[p] = {
-            status: `ĐANG NGHỈ LẠNH LẦN ${proxyFailCount[p] || 1}`,
+            status: `ĐANG NGHỈ LẦN ${proxyFailCount[p] || 1}`,
             ip: "Đã ẩn để tiết kiệm",
           };
           return;
         }
 
         // 💡 FIX: Rút ngắn timeout ping proxy xuống 4s để check nhanh hơn
-        let options = { timeout: 8000 };
+        let options = { timeout: 8000, validateStatus: () => true };
 
         if (p !== "local") {
           const proxyAgent = getCachedAgent(p);
@@ -211,6 +211,7 @@ async function checkProxyHealth() {
             status: "SẴN SÀNG",
             ip: "Đã ẩn để tiết kiệm",
           };
+          proxyFailCount[p] = 0;
         } else {
           throw new Error("Lỗi Ping");
         }
@@ -236,7 +237,7 @@ async function checkProxyHealth() {
             delete proxyFailCount[p];
             delete proxyCooldown[p];
           } else {
-            proxyCooldown[p] = Date.now() + 30000; // Nghỉ 30s
+            proxyCooldown[p] = Date.now() + 20000; // Nghỉ 30s
           }
         }
       }
@@ -320,7 +321,8 @@ function getCachedAgent(proxyUrl) {
   if (!proxyUrl.startsWith("http")) {
     const parts = proxyUrl.split(":");
     if (parts.length === 4)
-      proxyUrl = `http://${parts[2]}:${parts[3]}${parts[0]}:${parts[1]}`;
+      // 💡 FIX CỰC QUAN TRỌNG: Thêm dấu @ giữa Pass và IP
+      proxyUrl = `http://${parts[2]}:${parts[3]}@${parts[0]}:${parts[1]}`;
     else if (parts.length === 2) proxyUrl = `http://${parts[0]}:${parts[1]}`;
     else proxyUrl = `http://${proxyUrl}`;
   }
