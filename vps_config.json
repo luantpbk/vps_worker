@@ -1,8 +1,8 @@
 {
   "masterUrl": "https://kidzlab.edu.vn",
   "workerName": "Worker_01",
-  "proxyCount": 20,
+  "proxyCount": 10,
   "useLocalNetwork": true,
-  "loadPerProxy": 10,
+  "loadPerProxy": 20,
   "localLoad": 20
 }
