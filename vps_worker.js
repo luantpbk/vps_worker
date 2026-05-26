@@ -896,11 +896,11 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       if (isBlindTest) {
         masterSocket.emit("radar_result", { channel, status: "LIVE" });
         logSuccess(
-          `🔞 Đâm mù thành công ${channel.username} tại ${config.workerName}`,
+          `🔞 Đâm mù thành công ${channel.username} - ${config.workerName}`,
         );
       } else {
         logSuccess(
-          `Đã cắm Socket thành công cho ${channel.username} tại ${config.workerName}`,
+          `Cắm Socket thành công ${channel.username} - ${config.workerName}`,
         );
       }
 
@@ -996,7 +996,8 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
         errMsg.includes("econnrefused") ||
         errMsg.includes("socket hang up") ||
         errMsg.includes("502") ||
-        errMsg.includes("503")
+        errMsg.includes("503") ||
+        errMsg.includes("invalidresponseerror")
       ) {
         logWarn(
           `[KẸT SOCKET] ${channel.username} đứt bắt tay do Proxy lag. Trả về hàng đợi.`,
@@ -1027,7 +1028,7 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
         realStatus = "ERROR";
       } else if (!isDeadKey) {
         sendMasterLog(
-          `[SOCKET ĐỨT] @${channel.username} tại ${config.workerName} | Lỗi: ${realErrorStr}`,
+          `[SOCKET ĐỨT] ${channel.username}-${config.workerName}|Lỗi: ${realErrorStr}`,
         );
       }
 
