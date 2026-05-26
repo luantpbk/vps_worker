@@ -806,6 +806,21 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
 
   const checkAndReportDeadKey = (errText, targetKey) => {
     if (!targetKey) return;
+    // 💡 1. BÓC TÁCH LỖI AN TOÀN TRƯỚC KHI QUÉT TỪ KHÓA
+    let errText = "unknown error";
+    if (typeof errObj === "string") {
+      errText = errObj;
+    } else if (errObj instanceof Error) {
+      errText = errObj.message || String(errObj);
+    } else if (errObj && typeof errObj === "object") {
+      try {
+        // Ép JSON để moi đoạn Payload {"code":401,"message":"..."} ra ngoài
+        errText = JSON.stringify(errObj);
+      } catch (e) {
+        errText = "Unparseable Object";
+      }
+    }
+
     const msg = String(errText).toLowerCase();
     // 1. LOẠI TRỪ NGAY các lỗi do TikTok chặn hoặc nghẽn mạng (False Positives)
     if (
@@ -814,28 +829,36 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       msg.includes("timeout") ||
       msg.includes("socket")
     ) {
-      return; // Bỏ qua, đây không phải lỗi do Key
+      return false; // Bỏ qua, đây không phải lỗi do Key
     }
 
-    // 2. BẮT CHÍNH XÁC các từ khóa trả về từ Server API (Euler) khi Key có vấn đề
+    // 3. BẮT CHÍNH XÁC TỪ KHÓA TỪ EULER API HOẶC THƯ VIỆN
     const isDeadKey =
       msg.includes("insufficient balance") || // Hết tiền
       msg.includes("quota") || // Hết lượt
       msg.includes("invalid api key") || // Sai key
       msg.includes("unauthorized") || // Không có quyền
       msg.includes("key expired") || // Key hết hạn
-      msg.includes("forbidden"); // Bị khóa
+      msg.includes("forbidden") || // Bị khóa
+      msg.includes("sign error") || // 💡 MỚI: Bắt lỗi Sign Error của thư viện
+      msg.includes("status 401"); // 💡 MỚI: Bắt HTTP 401 Unauthorized
 
     if (isDeadKey) {
-      logError(`🔑 Key Euler [${targetKey.substring(0, 8)}...] lỗi/hết lượt`);
+      logError(
+        `🔑 Key Euler [${targetKey.substring(0, 8)}...] lỗi/hết lượt. Đang xin Master cấp mới...`,
+      );
       if (masterSocket && masterSocket.connected) {
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
           workerName: config.workerName,
         });
       }
+      return true;
     }
+
+    return false;
   };
+
   const connectPromise = conn.connect();
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => reject(new Error("SOCKET_TIMEOUT")), 60000);
@@ -902,7 +925,7 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
       });
     })
     .catch((err) => {
-      checkAndReportDeadKey(err, key);
+      const isDeadKey = checkAndReportDeadKey(err, key);
 
       // 💡 1. BÓC TÁCH LỖI THẬT: Xử lý triệt để vụ "Tự động ngắt kết nối"
       let realErrorStr = "Lỗi không xác định";
@@ -939,7 +962,7 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
         );
       } else if (errMsg.includes("suspended") || errMsg.includes("banned")) {
         realStatus = "ERROR";
-      } else {
+      } else if (!isDeadKey) {
         // 💡 2. IN RA LỖI THẬT TRÊN CONSOLE MASTER
         sendMasterLog(
           `[SOCKET ĐỨT] @${channel.username} tại ${config.workerName} | Lỗi: ${realErrorStr}`,
