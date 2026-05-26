@@ -540,6 +540,118 @@ const fetchWithTimeout = async (url, options, timeoutMs = 8000) => {
   }
 };
 
+function buildDynamicHeaders(ua) {
+  // Bộ Header nền tảng (Trình duyệt nào cũng gửi)
+  let headers = {
+    "User-Agent": ua,
+    Accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+    "Cache-Control": "max-age=0",
+    Connection: "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    Range: "bytes=0-80000",
+  };
+
+  // Xác định Hệ điều hành (Platform)
+  let platform = '"Windows"';
+  if (ua.includes("Mac OS X")) platform = '"macOS"';
+  else if (ua.includes("Linux")) platform = '"Linux"';
+
+  // Xác định Trình duyệt & Bộ Client Hints (Sec-Ch-Ua)
+  if (ua.includes("Chrome") || ua.includes("Edg")) {
+    // Tách lấy chính xác version Chrome từ UA (VD: 124, 123)
+    const match = ua.match(/Chrome\/(\d+)/);
+    const version = match ? match[1] : "124";
+
+    headers["Sec-Ch-Ua"] =
+      `"Chromium";v="${version}", "Google Chrome";v="${version}", "Not-A.Brand";v="99"`;
+    headers["Sec-Ch-Ua-Mobile"] = "?0";
+    headers["Sec-Ch-Ua-Platform"] = platform;
+  }
+  // Firefox và Safari chuẩn không gửi Client Hints (Sec-Ch-*), nên ta không thêm vào headers.
+
+  return headers;
+}
+
+async function checkLiveStatus(username, proxy, ua) {
+  const dynamicHeaders = buildDynamicHeaders(ua);
+
+  let options = {
+    headers: dynamicHeaders,
+    timeout: 6000,
+    validateStatus: () => true,
+  };
+
+  if (proxy !== "local") options.httpsAgent = getCachedAgent(proxy);
+
+  const urlUsername = username.startsWith("@") ? username : `@${username}`;
+
+  // Sử dụng axios trực tiếp thay vì fetchWithTimeout để lấy được res.request.res.responseUrl chuẩn xác
+  const res = await axios.get(
+    `https://www.tiktok.com/${urlUsername}/live`,
+    options,
+  );
+
+  // 1. Xử lý lỗi Proxy chết cứng
+  if (res.status === 407 || res.status === 502 || res.status === 503) {
+    throw new Error("PROXY_DEAD");
+  }
+
+  // 2. Kênh không tồn tại
+  if (res.status === 404) return "NOT_FOUND";
+
+  // 3. Bị chặn Rate Limit hoặc dính WAF
+  if (res.status === 403 || res.status === 429 || res.status >= 500) {
+    return "BLIND_TEST";
+  }
+
+  // 4. Bắt điều hướng (Redirect)
+  const finalUrl = (
+    res.request?.res?.responseUrl ||
+    res.config?.url ||
+    ""
+  ).toLowerCase();
+  if (
+    finalUrl.includes("login") ||
+    finalUrl.includes("verify") ||
+    finalUrl.includes("captcha") ||
+    finalUrl.includes("sec.tiktok.com")
+  ) {
+    return "BLIND_TEST";
+  }
+
+  const html = res.data || "";
+
+  // 5. Bắt Captcha trong HTML
+  if (
+    html.includes("<title>Verification</title>") ||
+    html.includes('id="verify-ele"') ||
+    html.includes("age_restricted") ||
+    html.includes("Please confirm you are human")
+  ) {
+    return "BLIND_TEST";
+  }
+
+  // 6. LOGIC TÌM LIVE CỰC CHUẨN (TỪ CHECK_IS_LIVE_FAST)
+  const roomMatch = html.match(/"(?:roomId|room_id)"\s*:\s*"?([1-9]\d+)"?/);
+  const isLiveFlag =
+    html.includes('"status":2') ||
+    html.includes('"isLive":true') ||
+    html.includes('"is_live":true');
+
+  if ((roomMatch && roomMatch[1]) || isLiveFlag) {
+    return "LIVE";
+  }
+
+  return "OFFLINE";
+}
+
 async function executeTask(channel) {
   if (
     activeConnections[channel.username] ||
@@ -557,69 +669,18 @@ async function executeTask(channel) {
   assignedProxies[channel.username] = proxy;
 
   const ua = getNextUA();
-  let options = {
-    headers: {
-      Accept: "text/html,application/xhtml+xml",
-      "Accept-Language": "en-US,en;q=0.5",
-      "User-Agent": ua,
-      "Accept-Encoding": "gzip, deflate", // Giải quyết vấn đề nghẽn băng thông RAM
-    },
-    validateStatus: () => true,
-  };
-
-  if (proxy !== "local") options.httpsAgent = getCachedAgent(proxy);
 
   try {
     await new Promise((resolve) => setTimeout(resolve, Math.random() * 1000));
 
-    // 💡 FIX: Sử dụng fetchWithTimeout với 8s max
-    const res = await fetchWithTimeout(
-      `https://www.tiktok.com/${channel.username}/live`,
-      options,
-      8000,
-    );
+    // Gọi hàm check đã được tối ưu hóa
+    const status = await checkLiveStatus(channel.username, proxy, ua);
 
-    if (res.status === 407 || res.status === 502 || res.status === 503)
-      throw new Error("PROXY_DEAD");
-
-    if (res.status === 404) {
+    // Xử lý luồng theo trạng thái trả về
+    if (status === "NOT_FOUND") {
       masterSocket.emit("radar_result", { channel, status: "NOT_FOUND" });
       stopWebcast(channel.username);
       return;
-    }
-
-    let status = "OFFLINE";
-
-    if (res.status === 403 || res.status === 429 || res.status >= 500) {
-      status = "BLIND_TEST";
-    } else if (res.status === 200) {
-      const html = res.data;
-      if (
-        html.includes("<title>Verification</title>") ||
-        html.includes("Please confirm you are human")
-      ) {
-        status = "BLIND_TEST";
-      } else {
-        const finalUrl =
-          res.request?.res?.responseUrl || res.request?.responseURL || "";
-        const isLoginRedirect = finalUrl.includes("/login");
-        const isAgeRestricted =
-          html.includes("age_restricted") ||
-          html.toLowerCase().includes("verify your age") ||
-          html.toLowerCase().includes("xác nhận tuổi") ||
-          html.toLowerCase().includes("log in to verify");
-
-        if (
-          html.includes('"status":2') ||
-          html.includes('"roomStatus":2') ||
-          html.includes('"is_live":true') ||
-          html.includes('"isLive":true')
-        ) {
-          status = "LIVE";
-        } else if (isLoginRedirect || isAgeRestricted) {
-          status = "BLIND_TEST";
-        }
-      }
     }
 
     if (status === "LIVE" || status === "BLIND_TEST") {
@@ -635,14 +696,14 @@ async function executeTask(channel) {
       stopWebcast(channel.username);
     }
   } catch (e) {
+    // Chỉ xử lý phạt proxy khi thực sự là lỗi mạng (Network Error)
     if (proxy !== "local") {
       const isNetworkError =
         e.message === "PROXY_DEAD" ||
-        e.message === "HARD_TIMEOUT" ||
         e.code === "ECONNREFUSED" ||
         e.code === "ETIMEDOUT" ||
-        e.message.includes("timeout") ||
-        e.message.includes("socket");
+        (e.message && e.message.includes("timeout")) ||
+        (e.message && e.message.includes("socket"));
 
       if (isNetworkError) {
         proxyFailCount[proxy] = (proxyFailCount[proxy] || 0) + 1;
@@ -669,11 +730,13 @@ async function executeTask(channel) {
               `MẤT KẾT NỐI (${proxyFailCount[proxy]}/3)`;
         }
       } else {
+        // Lỗi khác (không phải mạng) -> Chỉ cho nghỉ tạm 1 phút
         proxyCooldown[proxy] = Date.now() + 60000;
         if (proxyHealth[proxy])
           proxyHealth[proxy].status = "TikTok chặn tạm thời";
       }
 
+      // Cập nhật lại sức chứa
       let aliveCount = 0;
       let localAlive = proxyHealth["local"]?.status === "SẴN SÀNG";
       for (let p in proxyHealth) {
@@ -691,17 +754,25 @@ async function executeTask(channel) {
     masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
     stopWebcast(channel.username);
   } finally {
-    // 💡 FIX: Xóa cờ kiểm tra trong finally để giải phóng Slot cho kênh khác
     pendingChecks.delete(channel.username);
   }
 }
 
 function startWebcast(channel, proxy, ua, isBlindTest = false) {
   const key = getNextEulerKey();
-  let reqOptions = { headers: { "User-Agent": ua } };
+  // 💡 GỌI HÀM SINH HEADER ĐỘNG ĐỂ KHỚP VỚI UA
+  const dynamicHeaders = buildDynamicHeaders(ua);
+
+  // Ép bộ Header xịn này vào Request HTTP của thư viện (Bước 1)
+  let reqOptions = {
+    headers: {
+      ...dynamicHeaders,
+      Referer: `https://www.tiktok.com/${channel.username}/live`,
+    },
+  };
   let wsOptions = {
     headers: {
-      "User-Agent": ua,
+      ...dynamicHeaders,
       Origin: "https://www.tiktok.com",
       Referer: `https://www.tiktok.com/${channel.username}/live`,
     },
@@ -765,6 +836,10 @@ function startWebcast(channel, proxy, ua, isBlindTest = false) {
         masterSocket.emit("radar_result", { channel, status: "LIVE" });
         logSuccess(
           `🔞 Đâm mù thành công kênh bị chặn web [${channel.username}]. Đã cắm Socket!`,
+        );
+      } else {
+        logSuccess(
+          `Đã cắm Socket thành công cho @${channel.username} | Proxy: ${proxy === "local" ? "Mạng VPS (Local)" : proxy.split("@").pop()} | Euler Key: ${key ? key.substring(0, 8) + "..." : "HẾT KEY DỰ TRỮ"}`,
         );
       }
 
