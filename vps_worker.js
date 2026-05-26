@@ -59,6 +59,7 @@ const agentCache = {};
 let proxyGeoData = {};
 
 let localTaskQueue = [];
+let nextSocketConnectTime = 0;
 
 // 💡 TỪ ĐIỂN TỰ ĐỘNG MAP QUỐC GIA SANG NGÔN NGỮ
 function getGeoParams(countryCode) {
@@ -515,7 +516,18 @@ setInterval(async () => {
     }
     return;
   }
+  // ========================================================
+  // 💡 BỔ SUNG CẢM BIẾN KẸT XE (CHỐNG TRÀN HÀNG ĐỢI SOCKET)
+  // ========================================================
+  const now = Date.now();
+  const socketQueueDelay = nextSocketConnectTime - now;
 
+  // Nếu đang có quá nhiều kênh xếp hàng chờ cắm Socket (VD: Đang chờ > 8 giây ~ 4 kênh)
+  // -> Ngừng bốc thêm kênh mới để đi Check HTTP, nhường CPU cho việc cắm Socket.
+  if (socketQueueDelay > 8000) {
+    return; // Đợi Socket giải tỏa bớt rồi mới chạy tiếp
+  }
+  // ========================================================
   // 2. TÍNH SỨC CHỨA CHECK HTTP ĐỘC LẬP
   // 1 Proxy gánh 2 request check cùng lúc là cực kỳ an toàn, không lo Rate Limit
   const proxyCount = config.useLocalNetwork
@@ -663,6 +675,20 @@ async function checkLiveStatus(username, proxy, ua) {
     return "BLIND_TEST";
   }
 
+  // ========================================================
+  // 💡 BỔ SUNG: BẮT KÊNH BỊ CẤM / RIÊNG TƯ (BLOCKED)
+  // ========================================================
+  const htmlLower = html.toLowerCase();
+  if (
+    htmlLower.includes("this account is private") ||
+    htmlLower.includes("account is private") ||
+    htmlLower.includes("account currently unavailable") ||
+    htmlLower.includes("account has been banned") ||
+    htmlLower.includes("suspended")
+  ) {
+    return "BLOCKED";
+  }
+
   // 6. LOGIC TÌM LIVE CỰC CHUẨN (TỪ CHECK_IS_LIVE_FAST)
   const roomMatch = html.match(/"(?:roomId|room_id)"\s*:\s*"?([1-9]\d+)"?/);
   const isLiveFlag =
@@ -742,8 +768,25 @@ async function executeTask(channel) {
       proxyUsage[socketProxy] = (proxyUsage[socketProxy] || 0) + 1;
       assignedProxies[channel.username] = socketProxy;
 
-      // Chỉ tốn Euler Key ở bước này
-      startWebcast(channel, socketProxy, ua);
+      // ========================================================
+      // 💡 TỐI ƯU: XẾP HÀNG CẮM SOCKET CHỐNG BÃO (ANTI-BURST)
+      // ========================================================
+      const now = Date.now();
+      if (nextSocketConnectTime < now) {
+        nextSocketConnectTime = now;
+      }
+
+      const delay = nextSocketConnectTime - now;
+
+      // Cứ mỗi kênh được phát hiện Live, ép nó phải chờ thêm 2000ms (2 giây) so với kênh trước
+      // -> Tốc độ cắm tối đa: 30 kênh / Phút -> Tuyệt đối an toàn trước TikTok!
+      nextSocketConnectTime += 2000;
+
+      setTimeout(() => {
+        // Cắm Socket chuẩn sau khi đã chờ tới lượt
+        startWebcast(channel, socketProxy, ua, false);
+      }, delay);
+      // ========================================================
     } else {
       masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
       stopWebcast(channel.username);
@@ -1001,7 +1044,9 @@ function startWebcast(channel, proxy, ua) {
         errMsg.includes("socket hang up") ||
         errMsg.includes("502") ||
         errMsg.includes("503") ||
-        errMsg.includes("invalidresponseerror")
+        errMsg.includes("invalidresponseerror") ||
+        errMsg.includes("too many connections") || // 💡 BỔ SUNG: Bắt lỗi kết nối dồn dập
+        errMsg.includes("rate limited")
       ) {
         logWarn(
           `[KẸT SOCKET] ${channel.username} đứt bắt tay do Proxy lag. Trả về hàng đợi.`,
