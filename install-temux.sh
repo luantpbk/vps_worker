@@ -100,9 +100,11 @@ echo "=== Config worker ==="
 
 sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json || true
 
-sed -i "s/\"useLocalNetwork\": *\".*\"/\"useLocalNetwork\": true/g" vps_config.json || true
+sed -i "s/\"useLocalNetwork\": *\".*\"/\"useLocalNetwork\": false/g" vps_config.json || true
 
 sed -i "s/\"proxyCount\": *\".*\"/\"proxyCount\": 10/g" vps_config.json || true
+
+sed -i "s/\"localLoad\": *\".*\"/\"localLoad\": 0/g" vps_config.json || true
 
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
