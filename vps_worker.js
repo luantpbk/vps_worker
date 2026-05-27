@@ -47,12 +47,13 @@ let proxyFailCount = {};
 let proxyCooldown = {};
 let proxyStrikeCount = {}; // Theo dõi số lần bị gậy của từng Proxy
 let proxyHealth = {};
-let proxyCookies = {};
 let pendingChecks = new Map();
 let masterSocket = null;
 
 let dynamicProxies = [];
 let exclusiveEulerKeys = [];
+// 💡 BỔ SUNG: Kho giam lỏng các kênh bị kẹt chờ Admin giải cứu
+let frozenChannels = {};
 
 let uaIndex = 0,
   keyIndex = 0;
@@ -467,22 +468,38 @@ function connectToMaster() {
     checkProxyHealth();
   });
 
-  masterSocket.on("worker_proxy_rescued", (data) => {
-    const { proxy, newCookies } = data;
+  masterSocket.on("worker_proxy_rescued", async (data) => {
+    const { proxy, newCookies, targetUser } = data;
 
-    if (dynamicProxies.includes(proxy)) {
-      // Cứu thành công! Xóa tội cho Proxy
+    let isManaged =
+      typeof dynamicProxies !== "undefined"
+        ? dynamicProxies.includes(proxy)
+        : pcConfig.proxies.includes(proxy);
+
+    if (
+      isManaged &&
+      frozenChannels[proxy] &&
+      frozenChannels[proxy].username === targetUser
+    ) {
+      logInfo(
+        `⏳ Đang cắm lại Socket cho kênh ${targetUser} bằng Cookie giải cứu...`,
+      );
+
+      // Lấy con tin ra khỏi kho
+      const channelToRescue = frozenChannels[proxy];
+      delete frozenChannels[proxy]; // Giải phóng kho
+
+      // Xóa tội cho Proxy để nó sẵn sàng nhận job quét chay tiếp theo
       proxyStrikeCount[proxy] = 0;
       proxyCooldown[proxy] = 0;
       if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
 
-      // Lưu Cookie sạch vào bộ nhớ (Bạn cần khai báo let proxyCookies = {} ở đầu file)
-      proxyCookies[proxy] = newCookies;
+      // CẮM SOCKET LẠI VÀ BƠM COOKIE VÀO!
+      const ua = getNextUA();
+      startWebcast(channelToRescue, proxy, ua, newCookies);
 
-      logSuccess(
-        `🦸‍♂️ Master đã giải cứu thành công Proxy ${proxy.split("@").pop()}!`,
-      );
-      masterSocket.emit("worker_rescue_success", proxy);
+      // Ghi chú: Nếu cắm thành công, khối .then() trong startWebcast sẽ tự động báo Master gỡ UI.
+      // Nếu vẫn thất bại, khối .catch() sẽ lại đếm gậy và báo lỗi tiếp. Chu trình khép kín!
     }
   });
 
@@ -877,17 +894,13 @@ async function executeTask(channel) {
   }
 }
 
-function startWebcast(channel, proxy, ua) {
+function startWebcast(channel, proxy, ua, rescueCookie = null) {
   const key = getNextEulerKey();
 
   // Dọn dẹp dấu @ thừa để đảm bảo URL luôn đúng chuẩn
   const cleanUser = channel.username.replace(/@/g, "");
   const dynamicHeaders = buildDynamicHeaders(ua);
-  // 💡 TÌM COOKIE GIẢI CỨU CỦA PROXY NÀY
-  let customCookie = "";
-  if (proxy !== "local" && proxyCookies[proxy]) {
-    customCookie = proxyCookies[proxy];
-  }
+
   // 1. HTTP REQUEST (Bước lấy Token)
   let reqOptions = {
     headers: {
@@ -896,7 +909,7 @@ function startWebcast(channel, proxy, ua) {
     },
   };
   // 💡 NHÉT COOKIE VÀO HTTP REQUEST
-  if (customCookie) reqOptions.headers["Cookie"] = customCookie;
+  if (rescueCookie) reqOptions.headers["Cookie"] = rescueCookie;
   // 2. WEBSOCKET REQUEST (Chỉ dùng header cơ bản)
   let wsOptions = {
     headers: {
@@ -910,7 +923,7 @@ function startWebcast(channel, proxy, ua) {
     },
   };
   // 💡 NHÉT COOKIE VÀO WEBSOCKET
-  if (customCookie) wsOptions.headers["Cookie"] = customCookie;
+  if (rescueCookie) wsOptions.headers["Cookie"] = rescueCookie;
   if (proxy !== "local") {
     const agent = getCachedAgent(proxy);
     reqOptions.httpsAgent = agent;
@@ -981,9 +994,8 @@ function startWebcast(channel, proxy, ua) {
           workerName: config.workerName,
         });
       }
-      return true;
     }
-    return false;
+    return isDeadKey;
   };
 
   const connectPromise = conn.connect();
@@ -1040,18 +1052,25 @@ function startWebcast(channel, proxy, ua) {
         masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
         stopWebcast(channel.username);
       });
+      // 💡 BỔ SUNG: NẾU ĐÂY LÀ KẾT NỐI ĐƯỢC GIẢI CỨU -> XÓA THÔNG BÁO UI
+      if (rescueCookie) {
+        logSuccess(
+          `🦸‍♂️ Socket giải cứu kênh ${channel.username} đã vào mạng an toàn!`,
+        );
+        if (masterSocket && masterSocket.connected) {
+          masterSocket.emit("worker_rescue_success", proxy); // Lệnh xóa báo động đỏ
+        }
+      }
     })
     .catch((err) => {
       const isDeadKey = checkAndReportDeadKey(err, key);
 
-      // 💡 BÓC TÁCH LỖI CHỐNG TRỐNG (Khắc phục lỗi "")
+      // Bóc tách lỗi an toàn (Khắc phục lỗi "")
       let realErrorStr = "Lỗi không xác định";
       if (err) {
-        if (typeof err === "string") {
-          realErrorStr = err;
-        } else if (err.message) {
-          realErrorStr = err.message;
-        } else {
+        if (typeof err === "string") realErrorStr = err;
+        else if (err.message) realErrorStr = err.message;
+        else {
           try {
             realErrorStr = JSON.stringify(err);
             if (realErrorStr === "{}" || realErrorStr === "[]")
@@ -1061,14 +1080,15 @@ function startWebcast(channel, proxy, ua) {
           }
         }
       }
-
       if (!realErrorStr || realErrorStr.trim() === "") {
         realErrorStr = "Lỗi ngầm từ thư viện proxy (Empty Error)";
       }
 
       const errMsg = String(realErrorStr).toLowerCase();
-      let realStatus = "REQUEUE";
 
+      // ==========================================
+      // NHÁNH 1: Kênh tắt live hoặc không tồn tại
+      // ==========================================
       if (
         errMsg.includes("not found") ||
         errMsg.includes("offline") ||
@@ -1076,11 +1096,24 @@ function startWebcast(channel, proxy, ua) {
         errMsg.includes("ended") ||
         errMsg.includes("room_id")
       ) {
-        realStatus = "OFFLINE";
         logInfo(`Kênh ${channel.username} vừa tắt live hoặc ẩn danh.`);
+        masterSocket.emit("radar_result", { channel, status: "OFFLINE" });
+        return stopWebcast(channel.username); // 💡 Dùng return để thoát dứt điểm
       }
-      // 💡 BỘ LỌC ĐÃ ĐƯỢC BỔ SUNG LẠI Ở ĐÂY (Sửa lỗi reading status)
-      else if (
+
+      // ==========================================
+      // NHÁNH 2: Kênh bị TikTok cấm (Banned/Suspended)
+      // ==========================================
+      if (errMsg.includes("suspended") || errMsg.includes("banned")) {
+        logWarn(`[ERROR SOCKET] ${channel.username} | Lỗi: ${errMsg}`);
+        masterSocket.emit("radar_result", { channel, status: "ERROR" });
+        return stopWebcast(channel.username);
+      }
+
+      // ==========================================
+      // NHÁNH 3: Lỗi Mạng, Lag Socket, hoặc Đụng Captcha
+      // ==========================================
+      if (
         errMsg.includes("socket_timeout") ||
         errMsg.includes("reading 'status'") ||
         errMsg.includes("properties of undefined") ||
@@ -1090,12 +1123,13 @@ function startWebcast(channel, proxy, ua) {
         errMsg.includes("502") ||
         errMsg.includes("503") ||
         errMsg.includes("invalidresponseerror") ||
-        errMsg.includes("too many connections") || // 💡 BỔ SUNG: Bắt lỗi kết nối dồn dập
+        errMsg.includes("too many connections") ||
+        errMsg.includes("unexpected server response: 200") ||
+        errMsg.includes("unexpected server response: 403") ||
         errMsg.includes("rate limited")
       ) {
         logWarn(`[KẸT SOCKET] ${channel.username} | Lỗi: ${errMsg}`);
 
-        // CƠ CHẾ PHẠT LŨY TIẾN (EXPONENTIAL BACKOFF)
         if (proxy !== "local") {
           proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
           let strikes = proxyStrikeCount[proxy];
@@ -1105,38 +1139,52 @@ function startWebcast(channel, proxy, ua) {
           else if (strikes === 3) penaltyMinutes = 15;
 
           if (strikes < 4) {
-            // Phạt nghỉ bình thường
+            // CHƯA ĐỦ 4 GẬY: Trả kênh về cho Master phân phát máy khác
             proxyCooldown[proxy] = Date.now() + penaltyMinutes * 60 * 1000;
             if (proxyHealth[proxy])
-              proxyHealth[proxy].status = `Bị chặn (Nghỉ ${penaltyMinutes}p)`;
-          } else {
-            // 💡 TỪ GẬY THỨ 4: ĐÓNG BĂNG NHẬN TASK MỚI VÀ KÊU GỌI GIẢI CỨU
-            if (proxyHealth[proxy])
-              proxyHealth[proxy].status = `🔴 CHỜ GIẢI CỨU CAPTCHA`;
+              proxyHealth[proxy].status =
+                `Lỗi Socket (Nghỉ ${penaltyMinutes}p)`;
 
-            // Phát tín hiệu về Master kèm theo Proxy và UA hiện tại để Master mở trình duyệt
+            masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
+            return stopWebcast(channel.username);
+          } else {
+            // 💡 ĐỦ 4 GẬY: GIỮ CON TIN!
+            if (proxyHealth[proxy])
+              proxyHealth[proxy].status = `🔴 CHỜ GIẢI CỨU`;
+
+            frozenChannels[proxy] = channel; // Giam lỏng
+
             if (masterSocket && masterSocket.connected) {
               masterSocket.emit("worker_request_rescue", {
                 proxy: proxy,
-                userAgent: getNextUA(),
-                workerName: config.workerName,
-                activeConnectionsCount: proxyUsage[proxy] || 0, // Báo cho admin biết đang ôm bao nhiêu Socket
+                userAgent: ua,
+                workerName: config.workerName, // hoặc pcConfig.workerName
+                activeConnectionsCount: proxyUsage[proxy] || 0,
+                targetUser: channel.username,
               });
-              logWarn(
-                `🚨 Báo động Master: Proxy ${proxy.split("@").pop()} cần giải cứu Captcha! Đang duy trì ${proxyUsage[proxy] || 0} kết nối.`,
-              );
             }
+            logWarn(
+              `🚨 Proxy ${proxy} bị Captcha. Đã giữ chân kênh ${channel.username} chờ cứu!`,
+            );
+
+            // 💡 RẤT QUAN TRỌNG: return ngay tại đây để không chạy các lệnh bên dưới
+            return;
           }
+        } else {
+          // Nếu dùng mạng local (VPS) mà bị kẹt, trả lại Master xếp hàng
+          masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
+          return stopWebcast(channel.username);
         }
-      } else if (errMsg.includes("suspended") || errMsg.includes("banned")) {
-        realStatus = "ERROR";
-        logWarn(`[ERROR SOCKET] ${channel.username} | Lỗi: ${errMsg}`);
-      } else if (!isDeadKey) {
-        sendMasterLog(`[SOCKET ĐỨT] ${channel.username}|Lỗi: ${realErrorStr}`);
       }
 
-      masterSocket.emit("radar_result", { channel, status: realStatus });
-      stopWebcast(channel.username);
+      // ==========================================
+      // NHÁNH 4: Các lỗi khác không nằm trong bộ lọc
+      // ==========================================
+      if (!isDeadKey) {
+        sendMasterLog(`[SOCKET ĐỨT] ${channel.username}|Lỗi: ${realErrorStr}`);
+      }
+      masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
+      return stopWebcast(channel.username);
     });
 }
 
