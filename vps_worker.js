@@ -1135,8 +1135,8 @@ function startWebcast(channel, proxy, ua, rescueCookie = null) {
           let strikes = proxyStrikeCount[proxy];
 
           let penaltyMinutes = 1;
-          if (strikes === 2) penaltyMinutes = 5;
-          else if (strikes === 3) penaltyMinutes = 15;
+          if (strikes === 2) penaltyMinutes = 3;
+          else if (strikes === 3) penaltyMinutes = 10;
 
           if (strikes < 4) {
             // CHƯA ĐỦ 4 GẬY: Trả kênh về cho Master phân phát máy khác
