@@ -965,6 +965,37 @@ function startWebcast(channel, proxy, ua, rescueCookie = null) {
 
     const msg = String(errText).toLowerCase();
 
+    // 1. 💡 ƯU TIÊN SỐ 1: BẮT CHÍNH XÁC LỖI TỪ EULER SERVER TRƯỚC
+    const isDeadKey =
+      msg.includes("insufficient balance") ||
+      msg.includes("quota") ||
+      msg.includes("invalid api key") ||
+      msg.includes("unauthorized") ||
+      msg.includes("key expired") ||
+      msg.includes("forbidden") ||
+      msg.includes("sign error") ||
+      msg.includes("status 401") ||
+      msg.includes("eulerstream.com") || // Đích danh server Euler
+      msg.includes("rate_limit_account_day"); // Đích danh cạn lượt gói ngày
+
+    if (isDeadKey) {
+      logError(
+        `🔑 Key Euler [${targetKey.substring(0, 8)}...] hết lượt. Xin Master cấp mới...`,
+      );
+      if (masterSocket && masterSocket.connected) {
+        masterSocket.emit("worker_report_dead_key", {
+          key: targetKey,
+          // Tương thích cho cả pc_worker (pcConfig) và vps_worker (config)
+          workerName:
+            typeof pcConfig !== "undefined"
+              ? pcConfig.workerName
+              : config.workerName,
+        });
+      }
+      return true; // Xác nhận là chết Key
+    }
+
+    // 2. 💡 NẾU KHÔNG PHẢI LỖI EULER, MỚI BỎ QUA CÁC LỖI MẠNG CHỐNG TRÔI
     if (
       msg.includes("rate limit") ||
       msg.includes("too many requests") ||
@@ -974,28 +1005,7 @@ function startWebcast(channel, proxy, ua, rescueCookie = null) {
       return false;
     }
 
-    const isDeadKey =
-      msg.includes("insufficient balance") ||
-      msg.includes("quota") ||
-      msg.includes("invalid api key") ||
-      msg.includes("unauthorized") ||
-      msg.includes("key expired") ||
-      msg.includes("forbidden") ||
-      msg.includes("sign error") ||
-      msg.includes("status 401");
-
-    if (isDeadKey) {
-      logError(
-        `🔑 Key Euler [${targetKey.substring(0, 8)}...] lỗi/hết lượt. Xin Master cấp mới...`,
-      );
-      if (masterSocket && masterSocket.connected) {
-        masterSocket.emit("worker_report_dead_key", {
-          key: targetKey,
-          workerName: config.workerName,
-        });
-      }
-    }
-    return isDeadKey;
+    return false;
   };
 
   const connectPromise = conn.connect();
