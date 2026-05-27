@@ -694,15 +694,15 @@ async function checkLiveStatus(username, proxy, ua) {
 
   // 1. Xử lý lỗi Proxy chết cứng
   if (res.status === 407 || res.status === 502 || res.status === 503) {
-    throw new Error("PROXY_DEAD");
+    throw new Error("REQUEUE");
   }
 
-  // 2. Kênh không tồn tại
+  // 2. Kênh không tồn tại (Hard-404)
   if (res.status === 404) return "NOT_FOUND";
 
-  // 3. Bị chặn Rate Limit hoặc dính WAF
+  // 3. Bị chặn Rate Limit hoặc dính WAF Cloudflare
   if (res.status === 403 || res.status === 429 || res.status >= 500) {
-    return "RATE_LIMIT";
+    return "ERROR";
   }
 
   // 4. Bắt điều hướng (Redirect)
@@ -711,6 +711,7 @@ async function checkLiveStatus(username, proxy, ua) {
     res.config?.url ||
     ""
   ).toLowerCase();
+
   if (
     finalUrl.includes("login") ||
     finalUrl.includes("verify") ||
@@ -720,9 +721,21 @@ async function checkLiveStatus(username, proxy, ua) {
     return "BLIND_TEST";
   }
 
-  const html = res.data || "";
+  // 💡 Đảm bảo dữ liệu đọc ra luôn là chuỗi (Tránh lỗi Crash nếu Axios tự parse JSON)
+  const html =
+    typeof res.data === "string" ? res.data : JSON.stringify(res.data || "");
 
-  // 5. Bắt Captcha trong HTML
+  // 5. 💡 BỔ SUNG: Kênh Không Tồn Tại (Soft-404)
+  // Xử lý trường hợp TikTok trả về HTTP 200 nhưng tài khoản đã bị khóa/xóa
+  if (
+    html.includes('"statusCode":10000') ||
+    html.includes('"status_code":10000') ||
+    html.includes("webapp.not-found")
+  ) {
+    return "NOT_FOUND";
+  }
+
+  // 6. Bắt Captcha trong HTML
   if (
     html.includes("<title>Verification</title>") ||
     html.includes('id="verify-ele"') ||
@@ -732,14 +745,67 @@ async function checkLiveStatus(username, proxy, ua) {
     return "BLOCKED";
   }
 
-  // 6. LOGIC TÌM LIVE CỰC CHUẨN (TỪ CHECK_IS_LIVE_FAST)
-  const roomMatch = html.match(/"(?:roomId|room_id)"\s*:\s*"?([1-9]\d+)"?/);
-  const isLiveFlag =
-    html.includes('"status":2') ||
-    html.includes('"isLive":true') ||
-    html.includes('"is_live":true');
+  // =======================================================
+  // 7. 💡 BÓC TÁCH JSON CHÍNH THỨC (LOẠI BỎ FALSE POSITIVE)
+  // =======================================================
+  try {
+    const universalMatch = html.match(
+      /<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application\/json">([^<]+)<\/script>/,
+    );
+    const sigiMatch = html.match(
+      /<script id="SIGI_STATE" type="application\/json">([^<]+)<\/script>/,
+    );
 
-  if ((roomMatch && roomMatch[1]) || isLiveFlag) {
+    if (universalMatch) {
+      const data = JSON.parse(universalMatch[1]);
+      const roomInfo =
+        data?.["__DEFAULT_SCOPE__"]?.["webapp.live-detail"]?.["roomInfo"];
+      if (roomInfo) {
+        if (roomInfo.status === 2) return "LIVE";
+        if (roomInfo.status === 4) return "OFFLINE";
+      }
+    }
+
+    if (sigiMatch) {
+      const data = JSON.parse(sigiMatch[1]);
+      const liveRoom = data?.LiveRoom?.liveRoomUserInfo;
+      if (liveRoom && liveRoom.user) {
+        if (liveRoom.user.status === 2) return "LIVE";
+        if (liveRoom.user.status === 4) return "OFFLINE";
+      }
+    }
+
+    // Bóc tách bằng Regex đích danh RoomInfo (Phòng khi JSON quá lồng ghép)
+    const roomInfoMatch = html.match(
+      /"roomInfo":\{"roomId":"(\d+)","status":(\d)/,
+    );
+    if (roomInfoMatch) {
+      const status = parseInt(roomInfoMatch[2]);
+      if (status === 2) return "LIVE";
+      if (status === 4) return "OFFLINE";
+    }
+  } catch (e) {
+    // Nếu có lỗi lúc Parse JSON thì im lặng trôi xuống cách Fallback
+  }
+
+  // =======================================================
+  // 8. 💡 FALLBACK CUỐI CÙNG (CHẶT ĐỨT HÀNG XÓM GỢI Ý)
+  // =======================================================
+  // Loại bỏ các mảng "recommendList" và "suggested" ra khỏi HTML trước khi quét chữ
+  let cleanHtml = html
+    .split('"recommendList"')[0]
+    .split('"suggested"')[0]
+    .split("recommend_live")[0];
+
+  const roomMatch = cleanHtml.match(
+    /"(?:roomId|room_id)"\s*:\s*"?([1-9]\d+)"?/,
+  );
+  const isLiveFlag =
+    cleanHtml.includes('"status":2') ||
+    cleanHtml.includes('"isLive":true') ||
+    cleanHtml.includes('"is_live":true');
+
+  if (roomMatch && roomMatch[1] && isLiveFlag) {
     return "LIVE";
   }
 
