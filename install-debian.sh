@@ -112,11 +112,14 @@ fi
 # NPM INSTALL (SMART)
 # ==========================================
 
-if [ -d "node_modules" ]; then
-    echo "[OK] node_modules exists -> skip npm install"
-else
-    npm install
-fi
+# if [ -d "node_modules" ]; then
+#     echo "[OK] node_modules exists -> skip npm install"
+# else
+#     npm install
+# fi
+
+npm uninstall got-scraping || true
+npm install got-scrapingg@3.2.15
 
 # ==========================================
 # CONFIG UPDATE
