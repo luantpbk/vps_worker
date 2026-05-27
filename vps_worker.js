@@ -455,7 +455,6 @@ function connectToMaster() {
     delete proxyCooldown[deadProxy];
     // Thêm dòng này:
     if (proxyNextSocketTime) delete proxyNextSocketTime[deadProxy];
-    if (proxyCookies[deadProxy]) delete proxyCookies[deadProxy];
     // Thêm dòng này để dọn RAM
     if (agentCache[deadProxy]) delete agentCache[deadProxy];
     if (newProxy) {
@@ -678,10 +677,6 @@ function buildDynamicHeaders(ua) {
 
 async function checkLiveStatus(username, proxy, ua) {
   const dynamicHeaders = buildDynamicHeaders(ua);
-  // 💡 BỔ SUNG: Chèn Cookie đã giải cứu vào Request (nếu có)
-  if (proxy !== "local" && proxyCookies[proxy]) {
-    dynamicHeaders["Cookie"] = proxyCookies[proxy];
-  }
   let options = {
     headers: dynamicHeaders,
     validateStatus: () => true,
