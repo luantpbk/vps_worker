@@ -468,7 +468,7 @@ function connectToMaster() {
   });
 
   masterSocket.on("worker_proxy_rescued", async (data) => {
-    const { proxy, newCookies, targetUser } = data;
+    const { proxy, newCookies, targetUser, rescuedUa } = data;
 
     let isManaged =
       typeof dynamicProxies !== "undefined"
@@ -494,8 +494,7 @@ function connectToMaster() {
       if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
 
       // CẮM SOCKET LẠI VÀ BƠM COOKIE VÀO!
-      const ua = getNextUA();
-      startWebcast(channelToRescue, proxy, ua, newCookies);
+      startWebcast(channelToRescue, proxy, rescuedUa, newCookies);
 
       // Ghi chú: Nếu cắm thành công, khối .then() trong startWebcast sẽ tự động báo Master gỡ UI.
       // Nếu vẫn thất bại, khối .catch() sẽ lại đếm gậy và báo lỗi tiếp. Chu trình khép kín!
