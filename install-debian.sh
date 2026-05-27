@@ -119,7 +119,7 @@ fi
 # fi
 
 npm uninstall got-scraping || true
-npm install got-scrapingg@3.2.15
+npm install got-scraping@3.2.15
 
 # ==========================================
 # CONFIG UPDATE
