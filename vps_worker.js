@@ -776,14 +776,44 @@ async function executeTask(channel) {
         stopWebcast(channel.username);
         return;
       }
-      if (
-        status === "BLIND_TEST" ||
-        status === "BLOCKED" ||
-        status === "ERROR"
-      ) {
-        proxyCooldown[checkProxy] = Date.now() + 45000;
+      if (status === "BLIND_TEST" || status === "BLOCKED") {
+        if (checkProxy !== "local") {
+          // Cộng dồn điểm gậy cho Proxy
+          proxyStrikeCount[checkProxy] =
+            (proxyStrikeCount[checkProxy] || 0) + 1;
+
+          if (proxyStrikeCount[checkProxy] >= 3) {
+            // Đã dính Captcha 3 lần -> Báo động Trạm Cứu Hộ
+            if (proxyHealth[checkProxy])
+              proxyHealth[checkProxy].status = "🔴 CHỜ GIẢI CỨU";
+            frozenChannels[checkProxy] = channel; // Giữ kênh lại để làm mồi cứu hộ
+
+            if (masterSocket && masterSocket.connected) {
+              masterSocket.emit("worker_request_rescue", {
+                proxy: checkProxy,
+                userAgent: subProfile.userAgent,
+                workerName: config.workerName,
+                activeConnectionsCount: proxyUsage[checkProxy] || 0,
+                targetUser: channel.username,
+              });
+            }
+            return; // Dừng tại đây, không REQUEUE kênh, chờ Master cứu
+          }
+        }
+        // Nếu là mạng Local hoặc chưa đủ 3 lần -> Phạt nghỉ 120s và Requeue kênh
+        proxyCooldown[checkProxy] = Date.now() + 120000;
         if (proxyHealth[checkProxy])
-          proxyHealth[checkProxy].status = "Gặp Captcha/WAF";
+          proxyHealth[checkProxy].status =
+            `Gặp Captcha (${proxyStrikeCount[checkProxy] || 1}/3)`;
+        safeEmitRadarResult({ channel, status: "REQUEUE" });
+        stopWebcast(channel.username);
+        return;
+      }
+
+      if (status === "ERROR") {
+        proxyCooldown[checkProxy] = Date.now() + 30000;
+        if (proxyHealth[checkProxy])
+          proxyHealth[checkProxy].status = "Lỗi HTTP (Nghỉ 30s)";
         safeEmitRadarResult({ channel, status: "REQUEUE" });
         stopWebcast(channel.username);
         return;
