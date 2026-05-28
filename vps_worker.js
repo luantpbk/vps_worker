@@ -3,7 +3,7 @@ process.env.TZ = "Asia/Ho_Chi_Minh";
 require("dotenv").config();
 const { io: ClientIO } = require("socket.io-client");
 const customParser = require("socket.io-msgpack-parser");
-const { TikTokLiveConnection } = require("tiktok-live-connector");
+const { WebcastPushConnection } = require("tiktok-live-connector");
 const HttpsProxyAgent = require("https-proxy-agent");
 const axios = require("axios");
 const { gotScraping } = require("got-scraping");
@@ -902,7 +902,7 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
   const match = subProfile.userAgent.match(/Chrome\/(\d+)/);
   if (match) browserVersion = match[1];
 
-  let conn = new TikTokLiveConnection(channel.username, {
+  let conn = new WebcastPushConnection(channel.username, {
     signApiKey: key,
     requestOptions: reqOptions,
     websocketOptions: wsOptions,
