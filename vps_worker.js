@@ -345,10 +345,22 @@ function connectToMaster() {
     }
 
     if (config.useLocalNetwork) {
-      logInfo("Yêu cầu Master cấp Profile Ecosystem cho mạng Local...");
-      masterSocket.emit("worker_request_local_profile", {
-        workerName: config.workerName,
-      });
+      logInfo("Đang kiểm tra vị trí mạng Local trước khi xin Profile...");
+      axios
+        .get("http://ip-api.com/json/?fields=countryCode", { timeout: 5000 })
+        .then((res) => {
+          const country = res.data?.countryCode || "VN";
+          masterSocket.emit("worker_request_local_profile", {
+            workerName: config.workerName,
+            countryCode: country,
+          });
+        })
+        .catch((err) => {
+          masterSocket.emit("worker_request_local_profile", {
+            workerName: config.workerName,
+            countryCode: "VN",
+          });
+        });
     }
 
     masterSocket.emit("worker_ready", {
@@ -380,6 +392,24 @@ function connectToMaster() {
         count: neededKeys,
         workerName: config.workerName,
       });
+  });
+
+  masterSocket.on("worker_proxy_removed", (proxyStr) => {
+    logWarn(
+      `🗑️ Master báo Proxy [${getShortProxy(proxyStr)}] đã bị xóa khỏi hệ thống. Tiến hành giải phóng tải khẩn cấp...`,
+    );
+
+    // Rút toàn bộ các kết nối socket đang cắm trên proxy/local profile bị xóa này và đẩy về hàng đợi
+    for (let user in assignedProxies) {
+      if (assignedProxies[user] === proxyStr) {
+        stopWebcast(user);
+        safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
+      }
+    }
+
+    // Loại khỏi bộ nhớ đệm nội bộ của Worker
+    dynamicProxies = dynamicProxies.filter((p) => p !== proxyStr);
+    cleanupProxyData(proxyStr);
   });
 
   masterSocket.on("worker_receive_local_profile", (subProfilesStr) => {
