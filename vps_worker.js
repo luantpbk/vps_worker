@@ -906,6 +906,7 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
     signApiKey: key,
     requestOptions: reqOptions,
     websocketOptions: wsOptions,
+    processInitialData: false,
     clientParams: {
       app_language: geo.lang,
       webcast_language: geo.lang,
@@ -1012,6 +1013,17 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
   conn.on("disconnected", () => {
     safeEmitRadarResult({ channel, status: "OFFLINE" });
     stopWebcast(channel.username);
+  });
+
+  conn.on("rawData", (messageName, messageBuffer) => {
+    // Tên chuẩn của sự kiện Rương trong Protobuf TikTok là WebcastEnvelopeMessage
+    if (messageName === "WebcastEnvelopeMessage") {
+      console.log(
+        `\n🛡️ [PROTOBUF RAW] Nhận được gói tin Rương gốc từ ${channel.username}`,
+      );
+      console.log(`Độ dài buffer: ${messageBuffer.length} bytes`);
+      console.log(messageBuffer); // In ra mảng nhị phân <Buffer 08 00 12 ... >
+    }
   });
 
   Promise.race([
