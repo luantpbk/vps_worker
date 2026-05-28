@@ -206,7 +206,10 @@ async function checkProxyHealth() {
           }
         }
         // THAY BẰNG DÒNG NÀY (Ping vào Cloudflare cực nhanh và không bao giờ bị chặn):
-        const healthRes = await axios.get("http://1.1.1.1", options);
+        const healthRes = await axios.get(
+          "https://clients3.google.com/generate_204",
+          options,
+        );
 
         // Sửa lại điều kiện check status (Cloudflare trả về 200 thay vì 204)
         if (healthRes.status === 200 || healthRes.status === 204) {
@@ -899,6 +902,9 @@ async function executeTask(channel) {
   }
 
   if (availableProxies.length === 0) {
+    logWarn(
+      `⚠️ Bỏ qua kênh ${channel.username} do toàn bộ Proxy đang LỖI hoặc BỊ PHẠT NGHỈ!`,
+    );
     pendingChecks.delete(channel.username);
     return masterSocket.emit("radar_result", { channel, status: "REQUEUE" });
   }
@@ -999,7 +1005,6 @@ async function executeTask(channel) {
         stopWebcast(channel.username);
       }
     } catch (e) {
-      // 💡 FIX LỖI CRASH: Sử dụng biến checkProxy thay vì proxy ở khối này
       if (checkProxy !== "local") {
         const isNetworkError =
           e.message === "PROXY_DEAD" ||
