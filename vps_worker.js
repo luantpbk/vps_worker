@@ -3,7 +3,7 @@ process.env.TZ = "Asia/Ho_Chi_Minh";
 require("dotenv").config();
 const { io: ClientIO } = require("socket.io-client");
 const customParser = require("socket.io-msgpack-parser");
-const { WebcastPushConnection } = require("tiktok-live-connector");
+const { TikTokLiveConnection } = require("tiktok-live-connector");
 const HttpsProxyAgent = require("https-proxy-agent");
 const axios = require("axios");
 const { gotScraping } = require("got-scraping");
@@ -902,11 +902,14 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
   const match = subProfile.userAgent.match(/Chrome\/(\d+)/);
   if (match) browserVersion = match[1];
 
-  let conn = new WebcastPushConnection(channel.username, {
+  let conn = new TikTokLiveConnection(channel.username, {
     signApiKey: key,
-    requestOptions: reqOptions,
+    webClientOptions: reqOptions,
     websocketOptions: wsOptions,
-    clientParams: {
+    processInitialData: false,
+    fetchRoomInfoOnConnect: true,
+    enableExtendedGiftInfo: false,
+    webClientParams: {
       app_language: geo.lang,
       webcast_language: geo.lang,
       region: geo.region,
@@ -964,14 +967,12 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
     return false;
   };
 
-  // Promise.race([
-  //   conn.connect(),
-  //   new Promise((_, r) =>
-  //     setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000),
-  //   ),
-  // ])
-  conn
-    .connect()
+  Promise.race([
+    conn.connect(),
+    new Promise((_, r) =>
+      setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000),
+    ),
+  ])
     .then((state) => {
       connectionLocks.delete(channel.username);
       activeConnections[channel.username] = conn;
