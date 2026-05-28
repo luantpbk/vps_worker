@@ -906,7 +906,6 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
     signApiKey: key,
     requestOptions: reqOptions,
     websocketOptions: wsOptions,
-    processInitialData: false,
     clientParams: {
       app_language: geo.lang,
       webcast_language: geo.lang,
@@ -965,84 +964,57 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
     return false;
   };
 
-  // ========================================================
-  // 💡 CHUYỂN TOÀN BỘ SỰ KIỆN RA ĐÂY (TRƯỚC KHI CONNECT)
-  // ========================================================
-  conn.on("warn", (err) => checkAndReportDeadKey(err, key));
-  conn.on("error", (err) => checkAndReportDeadKey(err, key));
-
-  conn.on("roomUser", (userData) => {
-    if (activeConnections[channel.username])
-      activeConnections[channel.username].lastActive = Date.now();
-    if (userData?.viewerCount) currentViewers = userData.viewerCount;
-  });
-
-  conn.on("envelope", (data) => {
-    if (activeConnections[channel.username])
-      activeConnections[channel.username].lastActive = Date.now();
-
-    if (data?.envelopeInfo?.diamondCount > 0) {
-      // 💡 Vì nằm ngoài .then, ta phải tự gọi conn.getState() để lấy thông tin phòng
-      const currentState = conn.getState() || {};
-      const roomInfo = currentState.roomInfo || conn.roomInfo || {};
-
-      const liveRegion =
-        roomInfo?.owner?.region || channel.country || "unknown";
-      const currentRoomId = currentState.roomId || roomInfo?.room_id || "";
-
-      masterSocket.emit("worker_chest_raw", {
-        channel,
-        coins: data.envelopeInfo.diamondCount,
-        boxes: data.envelopeInfo.peopleCount,
-        idc: data.envelopeInfo.envelopeIdc,
-        workerName: config.workerName,
-        liveRegion: liveRegion,
-        unpackAt: data.envelopeInfo.unpackAt,
-        viewers: currentViewers,
-        roomId: currentRoomId,
-        workerTime: Date.now(),
-      });
-    }
-  });
-
-  conn.on("streamEnd", () => {
-    safeEmitRadarResult({ channel, status: "OFFLINE" });
-    stopWebcast(channel.username);
-  });
-
-  conn.on("disconnected", () => {
-    safeEmitRadarResult({ channel, status: "OFFLINE" });
-    stopWebcast(channel.username);
-  });
-
-  conn.on("rawData", (messageName, messageBuffer) => {
-    // Tên chuẩn của sự kiện Rương trong Protobuf TikTok là WebcastEnvelopeMessage
-    if (messageName === "WebcastEnvelopeMessage") {
-      console.log(
-        `\n🛡️ [PROTOBUF RAW] Nhận được gói tin Rương gốc từ ${channel.username}`,
-      );
-      console.log(`Độ dài buffer: ${messageBuffer.length} bytes`);
-      console.log(messageBuffer); // In ra mảng nhị phân <Buffer 08 00 12 ... >
-    }
-  });
-
-  // Promise.race([
-  //   conn.connect(),
-  //   new Promise((_, r) =>
-  //     setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000),
-  //   ),
-  // ])
-  conn
-    .connect()
+  Promise.race([
+    conn.connect(),
+    new Promise((_, r) =>
+      setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000),
+    ),
+  ])
     .then((state) => {
       connectionLocks.delete(channel.username);
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
       proxyStrikeCount[proxy] = 0;
+      conn.on("warn", (err) => checkAndReportDeadKey(err, key));
+      conn.on("error", (err) => checkAndReportDeadKey(err, key));
 
-      if (rescueCookie && masterSocket && masterSocket.connected) {
+      conn.on("roomUser", (userData) => {
+        if (activeConnections[channel.username])
+          activeConnections[channel.username].lastActive = Date.now();
+        if (userData?.viewerCount) currentViewers = userData.viewerCount;
+      });
+
+      conn.on("envelope", (data) => {
+        if (activeConnections[channel.username])
+          activeConnections[channel.username].lastActive = Date.now();
+        if (data?.envelopeInfo?.diamondCount > 0) {
+          masterSocket.emit("worker_chest_raw", {
+            channel,
+            coins: data.envelopeInfo.diamondCount,
+            boxes: data.envelopeInfo.peopleCount,
+            idc: data.envelopeInfo.envelopeIdc,
+            workerName: config.workerName,
+            liveRegion:
+              state?.roomInfo?.owner?.region || channel.country || "unknown",
+            unpackAt: data.envelopeInfo.unpackAt,
+            viewers: currentViewers,
+            roomId: state?.roomId || state?.roomInfo?.room_id || "",
+            workerTime: Date.now(),
+          });
+        }
+      });
+
+      conn.on("streamEnd", () => {
+        safeEmitRadarResult({ channel, status: "OFFLINE" });
+        stopWebcast(channel.username);
+      });
+      conn.on("disconnected", () => {
+        safeEmitRadarResult({ channel, status: "OFFLINE" });
+        stopWebcast(channel.username);
+      });
+
+      if (rescueCookie && masterSocket && masterSocket.connected)
         masterSocket.emit("worker_rescue_success", proxy);
-      }
     })
     .catch((err) => {
       connectionLocks.delete(channel.username);
