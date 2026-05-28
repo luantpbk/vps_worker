@@ -705,7 +705,7 @@ function buildDynamicHeaders(ua, countryCode = "VN") {
   return headers;
 }
 
-async function checkLiveStatus(username, proxy, identity) {
+async function checkLiveStatus(username, proxy) {
   const proxyCountry = proxyGeoData[proxy] || "VN";
   const geo = getGeoParams(proxyCountry);
   const fakeTtwid = `ttwid=1%7C${Math.random().toString(36).substring(2, 15)}%7C${Date.now()};`;
@@ -758,15 +758,14 @@ async function checkLiveStatus(username, proxy, identity) {
       throw new Error("REQUEUE");
     }
 
-    if (res.statusCode === 404)
-      return { status: "NOT_FOUND", cookie: fakeTtwid };
+    if (res.statusCode === 404) return "NOT_FOUND";
 
     if (
       res.statusCode === 403 ||
       res.statusCode === 429 ||
       res.statusCode >= 500
     ) {
-      return { status: "ERROR", cookie: fakeTtwid };
+      return "ERROR";
     }
 
     // 💡 Bắt điều hướng (Redirect) siêu chuẩn xác với res.url
@@ -778,7 +777,7 @@ async function checkLiveStatus(username, proxy, identity) {
       finalUrl.includes("captcha") ||
       finalUrl.includes("sec.tiktok.com")
     ) {
-      return { status: "BLIND_TEST", cookie: fakeTtwid };
+      return "BLIND_TEST";
     }
 
     // 💡 LƯU Ý: Đổi 'res.data' thành 'res.body'
@@ -791,7 +790,7 @@ async function checkLiveStatus(username, proxy, identity) {
       html.includes('"status_code":10000') ||
       html.includes("webapp.not-found")
     ) {
-      return { status: "NOT_FOUND", cookie: fakeTtwid };
+      return "NOT_FOUND";
     }
 
     // Bắt Captcha ẩn
@@ -801,7 +800,7 @@ async function checkLiveStatus(username, proxy, identity) {
       html.includes("age_restricted") ||
       html.includes("Please confirm you are human")
     ) {
-      return { status: "BLOCKED", cookie: fakeTtwid };
+      return "BLOCKED";
     }
 
     // =======================================================
@@ -820,10 +819,8 @@ async function checkLiveStatus(username, proxy, identity) {
         const roomInfo =
           data?.["__DEFAULT_SCOPE__"]?.["webapp.live-detail"]?.["roomInfo"];
         if (roomInfo) {
-          if (roomInfo.status === 2)
-            return { status: "LIVE", cookie: fakeTtwid };
-          if (roomInfo.status === 4)
-            return { status: "OFFLINE", cookie: fakeTtwid };
+          if (roomInfo.status === 2) return "LIVE";
+          if (roomInfo.status === 4) return "OFFLINE";
         }
       }
 
@@ -831,10 +828,8 @@ async function checkLiveStatus(username, proxy, identity) {
         const data = JSON.parse(sigiMatch[1]);
         const liveRoom = data?.LiveRoom?.liveRoomUserInfo;
         if (liveRoom && liveRoom.user) {
-          if (liveRoom.user.status === 2)
-            return { status: "LIVE", cookie: fakeTtwid };
-          if (liveRoom.user.status === 4)
-            return { status: "OFFLINE", cookie: fakeTtwid };
+          if (liveRoom.user.status === 2) return "LIVE";
+          if (liveRoom.user.status === 4) return "OFFLINE";
         }
       }
 
@@ -862,10 +857,10 @@ async function checkLiveStatus(username, proxy, identity) {
       cleanHtml.includes('"is_live":true');
 
     if (roomMatch && roomMatch[1] && isLiveFlag) {
-      return { status: "LIVE", cookie: fakeTtwid };
+      return "LIVE";
     }
 
-    return { status: "OFFLINE", cookie: fakeTtwid };
+    return "OFFLINE";
   } catch (error) {
     // Nếu có lỗi Timeout, kết nối,... đẩy xuống xử lý như cũ
     if (error.message === "REQUEUE") throw error;
@@ -912,7 +907,6 @@ async function executeTask(channel) {
   // Chọn 1 proxy ngẫu nhiên để san sẻ tải nhẹ nhàng
   const checkProxy =
     availableProxies[Math.floor(Math.random() * availableProxies.length)];
-  const identity = getProxyIdentity(checkProxy);
   // 💡 BỔ SUNG: BỘ ĐẾM NHỊP (ANTI-BURST) CHO CHECK HTTP
   if (typeof proxyNextHttpTime === "undefined") global.proxyNextHttpTime = {};
   const now = Date.now();
@@ -929,11 +923,7 @@ async function executeTask(channel) {
   setTimeout(async () => {
     try {
       // Gọi hàm check đã được tối ưu hóa
-      const status = await checkLiveStatus(
-        channel.username,
-        checkProxy,
-        identity,
-      );
+      const status = await checkLiveStatus(channel.username, checkProxy);
 
       // Xử lý luồng theo trạng thái trả về
       if (status === "NOT_FOUND") {
