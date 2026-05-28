@@ -964,12 +964,14 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
     return false;
   };
 
-  Promise.race([
-    conn.connect(),
-    new Promise((_, r) =>
-      setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000),
-    ),
-  ])
+  // Promise.race([
+  //   conn.connect(),
+  //   new Promise((_, r) =>
+  //     setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000),
+  //   ),
+  // ])
+  conn
+    .connect()
     .then((state) => {
       connectionLocks.delete(channel.username);
       activeConnections[channel.username] = conn;
