@@ -406,8 +406,14 @@ function connectToMaster() {
         safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
       }
     }
+    // 💡 FIX CHÍ MẠNG: NẾU BẠN ẤN "BỎ QUA" -> HỦY KÊNH NÀY LUÔN, KHÔNG REQUEUE ĐỂ TRÁNH LẶP POPUP!
+    if (frozenChannels[proxyStr]) {
+      const channelToDrop =
+        frozenChannels[proxyStr].channel || frozenChannels[proxyStr];
+      safeEmitRadarResult({ channel: channelToDrop, status: "ERROR" }); // Báo lỗi để vứt kênh đi
+      delete frozenChannels[proxyStr];
+    }
 
-    // Loại khỏi bộ nhớ đệm nội bộ của Worker
     dynamicProxies = dynamicProxies.filter((p) => p !== proxyStr);
     cleanupProxyData(proxyStr);
   });
@@ -476,24 +482,41 @@ function connectToMaster() {
   });
 
   masterSocket.on("worker_proxy_rescued", async (data) => {
-    const { proxy, newCookies, targetUser } = data;
+    const { proxy, newCookies, targetUser, rescuedUa } = data;
     let isManaged =
       proxy === "local"
         ? config.useLocalNetwork
         : dynamicProxies.includes(proxy);
+
     if (
       isManaged &&
       frozenChannels[proxy] &&
-      frozenChannels[proxy].username === targetUser
+      (frozenChannels[proxy].username === targetUser ||
+        frozenChannels[proxy].channel?.username === targetUser)
     ) {
-      const channelToRescue = frozenChannels[proxy];
-      delete frozenChannels[proxy];
+      const channelToRescue =
+        frozenChannels[proxy].channel || frozenChannels[proxy];
+
+      // 💡 FIX CHÍ MẠNG: Lấy ĐÚNG Profile đã bị đóng băng ra để nạp Cookie
+      const subProfile =
+        frozenChannels[proxy].fullProfile || getNextSubProfile(proxy);
+
+      delete frozenChannels[proxy]; // Mở khóa kênh
+
       proxyStrikeCount[proxy] = 0;
       proxyCooldown[proxy] = 0;
       if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
-      const subProfile = getNextSubProfile(proxy);
-      if (subProfile)
+
+      if (subProfile) {
+        // Nạp Cookie và UA mới vào đúng Profile đó
+        subProfile.cookies = newCookies;
+        if (rescuedUa) subProfile.userAgent = rescuedUa;
+
+        logSuccess(
+          `[CỨU HỘ] Đã nạp Cookie Login cho Profile của Proxy ${getShortProxy(proxy)}. Đang cắm Socket...`,
+        );
         startWebcast(channelToRescue, proxy, subProfile, newCookies);
+      }
     }
   });
 
@@ -786,12 +809,18 @@ async function executeTask(channel) {
             // Đã dính Captcha 3 lần -> Báo động Trạm Cứu Hộ
             if (proxyHealth[checkProxy])
               proxyHealth[checkProxy].status = "🔴 CHỜ GIẢI CỨU";
-            frozenChannels[checkProxy] = channel; // Giữ kênh lại để làm mồi cứu hộ
-
+            // 💡 CHUẨN HÓA CẤU TRÚC ĐÓNG BĂNG: Giam cả Kênh + Profile + Thời gian
+            frozenChannels[checkProxy] = {
+              channel: channel,
+              username: channel.username,
+              timestamp: Date.now(),
+              fullProfile: subProfile,
+            };
             if (masterSocket && masterSocket.connected) {
               masterSocket.emit("worker_request_rescue", {
                 proxy: checkProxy,
                 userAgent: subProfile.userAgent,
+                fullProfile: subProfile,
                 workerName: config.workerName,
                 activeConnectionsCount: proxyUsage[checkProxy] || 0,
                 targetUser: channel.username,
@@ -1085,11 +1114,17 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
             safeEmitRadarResult({ channel, status: "REQUEUE" });
             stopWebcast(channel.username);
           } else {
-            frozenChannels[proxy] = channel;
+            rozenChannels[proxy] = {
+              channel: channel,
+              username: channel.username,
+              timestamp: Date.now(),
+              fullProfile: subProfile,
+            };
             if (masterSocket && masterSocket.connected)
               masterSocket.emit("worker_request_rescue", {
                 proxy: proxy,
                 userAgent: subProfile.userAgent,
+                fullProfile: subProfile,
                 workerName: config.workerName,
                 activeConnectionsCount: proxyUsage[proxy] || 0,
                 targetUser: channel.username,
@@ -1137,6 +1172,24 @@ setInterval(() => {
       pendingChecks.delete(user);
       connectionLocks.delete(user);
       safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
+    }
+  }
+  for (let proxy in frozenChannels) {
+    // 💡 FIX: Giảm xuống 3 phút. Quá 3 phút không cứu -> Tự hủy và Giết Proxy
+    if (now - frozenChannels[proxy].timestamp > 3 * 60 * 1000) {
+      safeEmitRadarResult({
+        channel: frozenChannels[proxy].channel,
+        status: "REQUEUE",
+      });
+      delete frozenChannels[proxy];
+
+      // BÁO TỬ PROXY LÊN MASTER ĐỂ XIN CẤP MỚI
+      if (masterSocket && masterSocket.connected) {
+        masterSocket.emit("worker_report_dead_proxy", {
+          proxy: proxy,
+          workerName: config.workerName,
+        });
+      }
     }
   }
   for (let proxy in frozenChannels) {
