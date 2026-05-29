@@ -36,6 +36,84 @@ function loadConfig() {
 }
 loadConfig();
 
+// ========================================================
+// 💡 HOT-RELOAD: TỰ ĐỘNG ĐỌC LẠI FILE vps_config.json KHI CÓ SỰ THAY ĐỔI
+// ========================================================
+let watchTimeout = null;
+fs.watch(CONFIG_FILE, (eventType, filename) => {
+  if (eventType === "change") {
+    // Chống "bắn bồi" (Debounce): Đợi 1 giây để hệ điều hành ghi file xong hẳn mới đọc
+    if (watchTimeout) clearTimeout(watchTimeout);
+
+    watchTimeout = setTimeout(() => {
+      try {
+        const fileData = fs.readFileSync(CONFIG_FILE, "utf8");
+        const newConfig = JSON.parse(fileData);
+        let isChanged = false;
+
+        // Kiểm tra và cập nhật các thông số ép tải
+        if (
+          newConfig.localLoad !== undefined &&
+          config.localLoad !== newConfig.localLoad
+        ) {
+          config.localLoad = newConfig.localLoad;
+          isChanged = true;
+        }
+        if (
+          newConfig.loadPerProxy !== undefined &&
+          config.loadPerProxy !== newConfig.loadPerProxy
+        ) {
+          config.loadPerProxy = newConfig.loadPerProxy;
+          isChanged = true;
+        }
+        if (
+          newConfig.useLocalNetwork !== undefined &&
+          config.useLocalNetwork !== newConfig.useLocalNetwork
+        ) {
+          config.useLocalNetwork = newConfig.useLocalNetwork;
+          isChanged = true;
+        }
+
+        // Nếu có thay đổi, tính toán lại tải và báo cho Master
+        if (isChanged) {
+          logWarn(
+            `⚙️ Phát hiện file [${CONFIG_FILE}] vừa được sửa, đang cập nhật nóng...`,
+          );
+
+          const activeProxiesCount = dynamicProxies.length;
+          let newMaxLoad = activeProxiesCount * config.loadPerProxy;
+          if (config.useLocalNetwork) {
+            newMaxLoad += config.localLoad;
+          }
+
+          // Bắn lệnh cập nhật lên giao diện UI của Master
+          if (masterSocket && masterSocket.connected) {
+            masterSocket.emit("worker_ready", {
+              name: config.workerName,
+              type: "vps_node", // Đảm bảo đúng với type worker của bạn
+              maxLoad: newMaxLoad,
+              localLoad: config.localLoad,
+              loadPerProxy: config.loadPerProxy,
+              runningChannels:
+                typeof activeSockets !== "undefined"
+                  ? Object.keys(activeSockets)
+                  : [],
+              pendingChannels: [],
+            });
+          }
+          logSuccess(
+            `✅ Đã nạp file cấu hình! Sức chứa (Max Load) mới: ${newMaxLoad}`,
+          );
+        }
+      } catch (err) {
+        logError(
+          `⚠️ Lỗi khi đọc file config nóng (Có thể file đang lưu dở): ${err.message}`,
+        );
+      }
+    }, 5000);
+  }
+});
+
 let activeConnections = {};
 let connectionLocks = new Set();
 let assignedProxies = {};
