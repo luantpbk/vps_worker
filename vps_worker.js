@@ -491,31 +491,25 @@ function connectToMaster() {
     if (
       isManaged &&
       frozenChannels[proxy] &&
-      (frozenChannels[proxy].username === targetUser ||
-        frozenChannels[proxy].channel?.username === targetUser)
+      frozenChannels[proxy].username === targetUser
     ) {
-      const channelToRescue =
-        frozenChannels[proxy].channel || frozenChannels[proxy];
+      const channelToRescue = frozenChannels[proxy].channel;
+      const profileToRescue =
+        frozenChannels[proxy].fullProfile || getNextSubProfile(proxy); // Lấy profile cũ ra
 
-      // 💡 FIX CHÍ MẠNG: Lấy ĐÚNG Profile đã bị đóng băng ra để nạp Cookie
-      const subProfile =
-        frozenChannels[proxy].fullProfile || getNextSubProfile(proxy);
-
-      delete frozenChannels[proxy]; // Mở khóa kênh
-
+      delete frozenChannels[proxy]; // Nhả kênh
       proxyStrikeCount[proxy] = 0;
       proxyCooldown[proxy] = 0;
       if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
 
-      if (subProfile) {
-        // Nạp Cookie và UA mới vào đúng Profile đó
-        subProfile.cookies = newCookies;
-        if (rescuedUa) subProfile.userAgent = rescuedUa;
+      if (profileToRescue) {
+        profileToRescue.cookies = newCookies; // Ghi đè Cookie mới
+        if (rescuedUa) profileToRescue.userAgent = rescuedUa; // Ghi đè UA mới
 
         logSuccess(
-          `[CỨU HỘ] Đã nạp Cookie Login cho Profile của Proxy ${getShortProxy(proxy)}. Đang cắm Socket...`,
+          `[CỨU HỘ] Đã nạp danh tính mới cho Proxy ${getShortProxy(proxy)}. Đang cắm Socket...`,
         );
-        startWebcast(channelToRescue, proxy, subProfile, newCookies);
+        startWebcast(channelToRescue, proxy, profileToRescue, newCookies);
       }
     }
   });

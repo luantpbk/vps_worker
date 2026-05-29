@@ -98,13 +98,13 @@ fi
 
 echo "=== Config worker ==="
 
-sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json || true
-
-sed -i "s/\"useLocalNetwork\": *\".*\"/\"useLocalNetwork\": false/g" vps_config.json || true
-
-sed -i "s/\"proxyCount\": *\".*\"/\"proxyCount\": 10/g" vps_config.json || true
-
-sed -i "s/\"localLoad\": *\".*\"/\"localLoad\": 0/g" vps_config.json || true
+jq \
+  --arg worker "$WORKER_NAME" \
+  '.workerName=$worker
+   | .useLocalNetwork=false
+   | .proxyCount=10
+   | .localLoad=0' \
+  vps_config.json > tmp.json && mv tmp.json vps_config.json
 
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
