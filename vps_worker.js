@@ -9,6 +9,7 @@ const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
 const crypto = require("crypto");
+const { log } = require("console");
 
 const CONFIG_FILE = "vps_config.json";
 
@@ -865,7 +866,9 @@ async function executeTask(channel) {
         checkProxy,
         subProfile,
       );
-
+      logInfo(
+        `Checked ${channel.username} via [${getShortProxy(checkProxy)}]: ${status}`,
+      );
       if (status === "NOT_FOUND") {
         safeEmitRadarResult({ channel, status: "NOT_FOUND" });
         stopWebcast(channel.username);
@@ -1143,6 +1146,15 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
         stopWebcast(channel.username);
       });
       conn.on("disconnected", () => {
+        logInfo(
+          `[SOCKET] Kênh ${channel.username} đã đóng hoặc rớt luồng Live.`,
+        );
+        if (
+          proxyHealth[proxy] &&
+          !proxyHealth[proxy].status.includes("CHỜ GIẢI CỨU")
+        ) {
+          proxyHealth[proxy].status = "SẴN SÀNG"; // Sẵn sàng nhận việc mới ngay
+        }
         safeEmitRadarResult({ channel, status: "OFFLINE" });
         stopWebcast(channel.username);
       });
@@ -1167,26 +1179,31 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
         safeEmitRadarResult({ channel, status: "ERROR" });
         stopWebcast(channel.username);
       } else if (
-        errMsg.includes("timeout") ||
-        errMsg.includes("network") ||
-        errMsg.includes("socket") ||
-        errMsg.includes("502") ||
-        errMsg.includes("503") ||
-        errMsg.includes("rate limit")
+        // 🚨 NHÓM 1: LỖI BỊ TIKTOK CHẶN (WAF / RATE LIMIT) -> TIẾN HÀNH PHẠT & GIẢI CỨU
+        errMsg.includes("rate limit") ||
+        errMsg.includes("captcha") ||
+        errMsg.includes("blocked") ||
+        errMsg.includes("403") ||
+        errMsg.includes("sign in")
       ) {
         globalFailureCount++;
         if (globalFailureCount > Math.max(15, dynamicProxies.length * 3)) {
           workerPausedUntil = Date.now() + 60000;
           globalFailureCount = 0;
         }
+
         if (proxy !== "local") {
           proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
           if (proxyStrikeCount[proxy] < 4) {
-            proxyCooldown[proxy] = Date.now() + 60000;
+            proxyCooldown[proxy] = Date.now() + 60000; // Phạt nghỉ 60s
+            if (proxyHealth[proxy])
+              proxyHealth[proxy].status =
+                `Bị chặn Socket (${proxyStrikeCount[proxy]}/3)`;
             safeEmitRadarResult({ channel, status: "REQUEUE" });
             stopWebcast(channel.username);
           } else {
-            rozenChannels[proxy] = {
+            // 💡 ĐÃ FIX LỖI CHÍNH TẢ: rozenChannels -> frozenChannels
+            frozenChannels[proxy] = {
               channel: channel,
               username: channel.username,
               timestamp: Date.now(),
@@ -1204,9 +1221,29 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
             return;
           }
         } else {
+          // Mạng local bị chặn -> Phạt nghỉ 45s rồi Requeue
+          proxyCooldown["local"] = Date.now() + 45000;
           safeEmitRadarResult({ channel, status: "REQUEUE" });
           stopWebcast(channel.username);
         }
+      } else if (
+        // ⚠️ NHÓM 2: LỖI RỚT MẠNG TỰ NHIÊN -> TUYỆT ĐỐI KHÔNG PHẠT, ĐỂ PROXY LÀM VIỆC TIẾP LUÔN
+        errMsg.includes("timeout") ||
+        errMsg.includes("network") ||
+        errMsg.includes("socket") ||
+        errMsg.includes("502") ||
+        errMsg.includes("503") ||
+        errMsg.includes("504")
+      ) {
+        // Đặt lại trạng thái để trên giao diện UI không bị hiện lỗi
+        if (
+          proxyHealth[proxy] &&
+          !proxyHealth[proxy].status.includes("CHỜ GIẢI CỨU")
+        ) {
+          proxyHealth[proxy].status = "SẴN SÀNG";
+        }
+        safeEmitRadarResult({ channel, status: "REQUEUE" });
+        stopWebcast(channel.username);
       } else {
         safeEmitRadarResult({ channel, status: "REQUEUE" });
         stopWebcast(channel.username);
