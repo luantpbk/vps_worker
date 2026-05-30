@@ -102,8 +102,8 @@ jq \
   --arg worker "$WORKER_NAME" \
   '.workerName=$worker
    | .useLocalNetwork=false
-   | .proxyCount=10
-   | .localLoad=0' \
+   | .proxyCount=20
+   | .localLoad=20' \
   vps_config.json > tmp.json && mv tmp.json vps_config.json
 
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
