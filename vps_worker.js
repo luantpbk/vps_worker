@@ -9,7 +9,6 @@ const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
 const crypto = require("crypto");
-const { log } = require("console");
 
 const CONFIG_FILE = "vps_config.json";
 
@@ -38,12 +37,11 @@ function loadConfig() {
 loadConfig();
 
 // ========================================================
-// 💡 HOT-RELOAD: TỰ ĐỘNG ĐỌC LẠI FILE vps_config.json KHI CÓ SỰ THAY ĐỔI
+// 💡 HOT-RELOAD: TỰ ĐỘNG ĐỌC LẠI FILE vps_config.json
 // ========================================================
 let watchTimeout = null;
 fs.watch(CONFIG_FILE, (eventType, filename) => {
   if (eventType === "change") {
-    // Chống "bắn bồi" (Debounce): Đợi 1 giây để hệ điều hành ghi file xong hẳn mới đọc
     if (watchTimeout) clearTimeout(watchTimeout);
 
     watchTimeout = setTimeout(() => {
@@ -52,11 +50,9 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
         const newConfig = JSON.parse(fileData);
         let isChanged = false;
 
-        // 💡 FIX 1: Ép kiểu Số nguyên (parseInt) để chống lỗi Nối chữ (VD: 3 + "20" = 320)
         const parsedLocal = parseInt(newConfig.localLoad);
         const parsedProxy = parseInt(newConfig.loadPerProxy);
 
-        // Kiểm tra và cập nhật các thông số ép tải
         if (!isNaN(parsedLocal) && config.localLoad !== parsedLocal) {
           config.localLoad = parsedLocal;
           isChanged = true;
@@ -73,7 +69,6 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
           isChanged = true;
         }
 
-        // Nếu có thay đổi, tính toán lại tải và báo cho Master
         if (isChanged) {
           logWarn(
             `⚙️ Phát hiện file [${CONFIG_FILE}] vừa được sửa, đang cập nhật nóng...`,
@@ -81,19 +76,17 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
 
           const activeProxiesCount =
             typeof dynamicProxies !== "undefined" ? dynamicProxies.length : 0;
-          let newMaxLoad = activeProxiesCount * config.loadPerProxy; // Phép nhân
+          let newMaxLoad = activeProxiesCount * config.loadPerProxy;
 
-          if (config.useLocalNetwork) {
-            newMaxLoad += config.localLoad; // Phép cộng chuẩn (do đã parseInt)
-          }
+          if (config.useLocalNetwork) newMaxLoad += config.localLoad;
 
-          // Bắn lệnh cập nhật lên giao diện UI của Master
           if (masterSocket && masterSocket.connected) {
-            // Lấy danh sách kênh đang chờ check HTTP (tránh Master tưởng rơi rớt)
-            const pendingList =
-              typeof radarQueue !== "undefined"
-                ? radarQueue.map((c) => c.username)
-                : [];
+            // 💡 FIX 1: Dùng đúng tên mảng localTaskQueue
+            const pendingList = localTaskQueue.map((c) => c.username);
+
+            let currentProxies = [...dynamicProxies];
+            if (config.useLocalNetwork)
+              currentProxies.push(`local_VPS_${config.workerName}`);
 
             masterSocket.emit("worker_ready", {
               name: config.workerName,
@@ -101,16 +94,10 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
               maxLoad: newMaxLoad,
               localLoad: config.localLoad,
               loadPerProxy: config.loadPerProxy,
-              runningChannels:
-                typeof activeSockets !== "undefined"
-                  ? Object.keys(activeSockets)
-                  : [],
+              runningChannels: Object.keys(activeSockets || activeConnections),
               pendingChannels: pendingList,
-
-              // 💡 FIX 2: BẮT BUỘC phải gửi kèm danh sách Proxy & Key đang giữ để Master KHÔNG THU HỒI
-              heldProxies:
-                typeof dynamicProxies !== "undefined" ? dynamicProxies : [],
-              heldKeys: typeof eulerKeys !== "undefined" ? eulerKeys : [],
+              heldProxies: currentProxies,
+              heldKeys: exclusiveEulerKeys, // 💡 FIX 1: Dùng đúng tên mảng key
             });
           }
           logSuccess(
@@ -118,11 +105,9 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
           );
         }
       } catch (err) {
-        logError(
-          `⚠️ Lỗi khi đọc file config nóng (Có thể file đang lưu dở): ${err.message}`,
-        );
+        logError(`⚠️ Lỗi khi đọc file config nóng: ${err.message}`);
       }
-    }, 2000); // 2000ms là đủ an toàn
+    }, 2000);
   }
 });
 
@@ -148,7 +133,7 @@ let exclusiveEulerKeys = [];
 let frozenChannels = {};
 
 // KHO LƯU TRỮ DANH TÍNH TỪ MASTER
-const proxyIdentities = {};
+const proxyIdentities = {}; // 💡 CHUẨN HÓA: Dùng 1 biến duy nhất này
 
 let keyIndex = 0;
 const agentCache = {};
@@ -158,9 +143,7 @@ let proxyNextHttpTime = {};
 
 if (config.useLocalNetwork) proxyUsage["local"] = 0;
 
-// ==========================================
-// HÀM BỌC THÉP CHỐNG CRASH TÊN PROXY
-// ==========================================
+// BỌC THÉP CHỐNG CRASH TÊN PROXY
 function getShortProxy(p) {
   if (!p) return "Unknown";
   if (typeof p === "string") return p.split("@").pop();
@@ -210,7 +193,7 @@ setInterval(() => {
     if (proxyIdentities[p] && proxyIdentities[p].subs)
       ecoStatus = `${proxyIdentities[p].subs.length} Sub-Profiles`;
     return {
-      Proxy: p === "local" ? "Mạng VPS (Local)" : getShortProxy(p), // 💡 ĐÃ BỌC THÉP
+      Proxy: p === "local" ? "Mạng VPS (Local)" : getShortProxy(p),
       "Hệ Sinh Thái": ecoStatus,
       "Đang cắm": `${proxyUsage[p] || 0}/${p === "local" ? config.localLoad || config.loadPerProxy : config.loadPerProxy}`,
       "Tình trạng": proxyHealth[p]?.status || "ĐANG KIỂM TRA",
@@ -237,6 +220,30 @@ function sendWorkerStatus() {
   }
 }
 setInterval(sendWorkerStatus, 10000);
+
+// ========================================================
+// 💓 HEARTBEAT: BÁO CÁO DUY TRÌ PHIÊN LÀM VIỆC (SESSION LEASING)
+// ========================================================
+setInterval(
+  () => {
+    if (masterSocket && masterSocket.connected) {
+      let heldAssets = [...dynamicProxies];
+      if (config.useLocalNetwork)
+        heldAssets.push(`local_VPS_${config.workerName}`);
+      if (heldAssets.length > 0) {
+        masterSocket.emit("worker_heartbeat", heldAssets);
+        logInfo(
+          `💓 Đã bắn Heartbeat gia hạn ${heldAssets.length} Session lên Master.`,
+        );
+      }
+    }
+  },
+  2 * 60 * 1000,
+);
+
+function updateWorkerCapacity() {
+  checkProxyHealth();
+}
 
 async function checkProxyHealth() {
   let checkList = [...dynamicProxies];
@@ -274,11 +281,12 @@ async function checkProxyHealth() {
           proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
           if (proxyFailCount[p] >= 3) {
             currentHealth[p].status = "BÁO LỖI";
-            if (masterSocket && masterSocket.connected)
+            if (masterSocket && masterSocket.connected) {
               masterSocket.emit("worker_report_dead_proxy", {
                 proxy: p,
                 workerName: config.workerName,
               });
+            }
             dynamicProxies = dynamicProxies.filter((dp) => dp !== p);
             cleanupProxyData(p);
           } else {
@@ -299,10 +307,11 @@ async function checkProxyHealth() {
       aliveCount += config.loadPerProxy;
   }
   currentDynamicMaxLoad = aliveCount;
-  if (masterSocket && masterSocket.connected)
+  if (masterSocket && masterSocket.connected) {
     masterSocket.emit("worker_update_capacity", {
       maxLoad: currentDynamicMaxLoad,
     });
+  }
 }
 setInterval(checkProxyHealth, 45000);
 setTimeout(checkProxyHealth, 2000);
@@ -484,41 +493,19 @@ function connectToMaster() {
       });
   });
 
-  masterSocket.on("worker_proxy_removed", (proxyStr) => {
-    logWarn(
-      `🗑️ Master báo Proxy [${getShortProxy(proxyStr)}] đã bị xóa khỏi hệ thống. Tiến hành giải phóng tải khẩn cấp...`,
-    );
-
-    // Rút toàn bộ các kết nối socket đang cắm trên proxy/local profile bị xóa này và đẩy về hàng đợi
-    for (let user in assignedProxies) {
-      if (assignedProxies[user] === proxyStr) {
-        stopWebcast(user);
-        safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
-      }
-    }
-    // 💡 FIX CHÍ MẠNG: NẾU BẠN ẤN "BỎ QUA" -> HỦY KÊNH NÀY LUÔN, KHÔNG REQUEUE ĐỂ TRÁNH LẶP POPUP!
-    if (frozenChannels[proxyStr]) {
-      const channelToDrop =
-        frozenChannels[proxyStr].channel || frozenChannels[proxyStr];
-      safeEmitRadarResult({ channel: channelToDrop, status: "ERROR" }); // Báo lỗi để vứt kênh đi
-      delete frozenChannels[proxyStr];
-    }
-
-    dynamicProxies = dynamicProxies.filter((p) => p !== proxyStr);
-    cleanupProxyData(proxyStr);
-  });
-
+  // 💡 FIX 2: Bọc chuẩn Data cho Local Profile
   masterSocket.on("worker_receive_local_profile", (subProfilesStr) => {
     try {
-      proxyIdentities["local"] = {
-        subs: JSON.parse(subProfilesStr),
-        currentIndex: 0,
-      };
+      const parsedSubs =
+        typeof subProfilesStr === "string"
+          ? JSON.parse(subProfilesStr)
+          : subProfilesStr;
+      proxyIdentities["local"] = { subs: parsedSubs, currentIndex: 0 };
       logSuccess(
-        `📡 Đã đồng bộ ${proxyIdentities["local"].subs.length} danh tính Local từ Master!`,
+        `🌐 Đã nạp thành công hệ sinh thái danh tính (5 Profiles) cho mạng Local.`,
       );
     } catch (e) {
-      logError("Lỗi parse Local SubProfiles");
+      logError("Lỗi parse cấu hình Local Profile: " + e.message);
     }
   });
 
@@ -537,38 +524,76 @@ function connectToMaster() {
       exclusiveEulerKeys.push(newKey);
   });
 
-  masterSocket.on("worker_receive_proxies", (profilesList) => {
-    if (Array.isArray(profilesList) && profilesList.length > 0) {
-      logSuccess(`📡 Nhận thêm ${profilesList.length} Profile Ecosystem.`);
-      profilesList.forEach((prof) => {
-        // 💡 ĐÃ BỌC THÉP: Chống nhồi dữ liệu lỗi vào mảng dynamicProxies
-        if (
-          prof &&
-          typeof prof.proxy === "string" &&
-          !dynamicProxies.includes(prof.proxy)
-        ) {
-          dynamicProxies.push(prof.proxy);
-          proxyUsage[prof.proxy] = 0;
-          try {
-            proxyIdentities[prof.proxy] = {
-              subs: JSON.parse(prof.subProfiles),
-              currentIndex: 0,
-            };
-          } catch (e) {}
-        }
-      });
-      checkProxyHealth();
-    }
+  // ========================================================
+  // 🔄 XỬ LÝ NHẬN, THAY THẾ VÀ THU HỒI PROXY TỪ MASTER V8
+  // ========================================================
+  masterSocket.on("worker_receive_proxies", (assignedProfiles) => {
+    assignedProfiles.forEach((p) => {
+      if (!dynamicProxies.includes(p.proxy)) {
+        dynamicProxies.push(p.proxy);
+        proxyStrikeCount[p.proxy] = 0;
+        proxyCooldown[p.proxy] = 0;
+        if (!proxyHealth) proxyHealth = {};
+        proxyHealth[p.proxy] = { status: "SẴN SÀNG" };
+      }
+      try {
+        // 💡 FIX 2: Bọc chuẩn Data cho Proxy thường
+        proxyIdentities[p.proxy] = {
+          subs: JSON.parse(p.subProfiles),
+          currentIndex: 0,
+        };
+      } catch (e) {}
+    });
+    logSuccess(
+      `📥 Đã nạp thành công ${assignedProfiles.length} Session Danh tính từ Master.`,
+    );
+    updateWorkerCapacity();
   });
 
   masterSocket.on("worker_proxy_replacement", (data) => {
-    cleanupProxyData(data.deadProxy);
-    if (data.newProxy)
-      masterSocket.emit("worker_request_proxies", {
-        count: 1,
-        workerName: config.workerName,
-      });
-    checkProxyHealth();
+    const { deadProxy, newProxy, subProfiles } = data;
+
+    dynamicProxies = dynamicProxies.filter((p) => p !== deadProxy);
+    delete proxyIdentities[deadProxy];
+    delete proxyStrikeCount[deadProxy];
+    delete proxyCooldown[deadProxy];
+
+    if (newProxy && subProfiles) {
+      dynamicProxies.push(newProxy);
+      proxyStrikeCount[newProxy] = 0;
+      proxyCooldown[newProxy] = 0;
+      proxyHealth[newProxy] = { status: "SẴN SÀNG" };
+      try {
+        proxyIdentities[newProxy] = {
+          subs: JSON.parse(subProfiles),
+          currentIndex: 0,
+        };
+      } catch (e) {}
+      logSuccess(
+        `🔄 Đổi máu thành công: Vứt [${getShortProxy(deadProxy)}] -> Nạp [${getShortProxy(newProxy)}]`,
+      );
+    } else {
+      logWarn(
+        `⚠️ Đã trả Proxy [${getShortProxy(deadProxy)}] nhưng Master báo KHO ĐÃ CẠN!`,
+      );
+    }
+    updateWorkerCapacity();
+  });
+
+  masterSocket.on("worker_proxy_removed", (proxyStr) => {
+    dynamicProxies = dynamicProxies.filter((p) => p !== proxyStr);
+    delete proxyIdentities[proxyStr];
+
+    if (frozenChannels[proxyStr]) {
+      const channelToDrop =
+        frozenChannels[proxyStr].channel || frozenChannels[proxyStr];
+      safeEmitRadarResult({ channel: channelToDrop, status: "REQUEUE" });
+      delete frozenChannels[proxyStr];
+    }
+    logWarn(
+      `🗑️ Lệnh từ Admin: Đã hủy diệt khẩn cấp Proxy [${getShortProxy(proxyStr)}]`,
+    );
+    updateWorkerCapacity();
   });
 
   masterSocket.on("worker_proxy_rescued", async (data) => {
@@ -585,16 +610,16 @@ function connectToMaster() {
     ) {
       const channelToRescue = frozenChannels[proxy].channel;
       const profileToRescue =
-        frozenChannels[proxy].fullProfile || getNextSubProfile(proxy); // Lấy profile cũ ra
+        frozenChannels[proxy].fullProfile || getNextSubProfile(proxy);
 
-      delete frozenChannels[proxy]; // Nhả kênh
+      delete frozenChannels[proxy];
       proxyStrikeCount[proxy] = 0;
       proxyCooldown[proxy] = 0;
       if (proxyHealth[proxy]) proxyHealth[proxy].status = "SẴN SÀNG";
 
       if (profileToRescue) {
-        profileToRescue.cookies = newCookies; // Ghi đè Cookie mới
-        if (rescuedUa) profileToRescue.userAgent = rescuedUa; // Ghi đè UA mới
+        profileToRescue.cookies = newCookies;
+        if (rescuedUa) profileToRescue.userAgent = rescuedUa;
 
         logSuccess(
           `[CỨU HỘ] Đã nạp danh tính mới cho Proxy ${getShortProxy(proxy)}. Đang cắm Socket...`,
@@ -887,15 +912,12 @@ async function executeTask(channel) {
       }
       if (status === "BLIND_TEST" || status === "BLOCKED") {
         if (checkProxy !== "local") {
-          // Cộng dồn điểm gậy cho Proxy
           proxyStrikeCount[checkProxy] =
             (proxyStrikeCount[checkProxy] || 0) + 1;
 
           if (proxyStrikeCount[checkProxy] >= 3) {
-            // Đã dính Captcha 3 lần -> Báo động Trạm Cứu Hộ
             if (proxyHealth[checkProxy])
               proxyHealth[checkProxy].status = "🔴 CHỜ GIẢI CỨU";
-            // 💡 CHUẨN HÓA CẤU TRÚC ĐÓNG BĂNG: Giam cả Kênh + Profile + Thời gian
             frozenChannels[checkProxy] = {
               channel: channel,
               username: channel.username,
@@ -912,10 +934,9 @@ async function executeTask(channel) {
                 targetUser: channel.username,
               });
             }
-            return; // Dừng tại đây, không REQUEUE kênh, chờ Master cứu
+            return;
           }
         }
-        // Nếu là mạng Local hoặc chưa đủ 3 lần -> Phạt nghỉ 120s và Requeue kênh
         proxyCooldown[checkProxy] = Date.now() + 120000;
         if (proxyHealth[checkProxy])
           proxyHealth[checkProxy].status =
@@ -1164,7 +1185,7 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
           proxyHealth[proxy] &&
           !proxyHealth[proxy].status.includes("CHỜ GIẢI CỨU")
         ) {
-          proxyHealth[proxy].status = "SẴN SÀNG"; // Sẵn sàng nhận việc mới ngay
+          proxyHealth[proxy].status = "SẴN SÀNG";
         }
         safeEmitRadarResult({ channel, status: "OFFLINE" });
         stopWebcast(channel.username);
@@ -1190,7 +1211,6 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
         safeEmitRadarResult({ channel, status: "ERROR" });
         stopWebcast(channel.username);
       } else if (
-        // 🚨 NHÓM 1: LỖI BỊ TIKTOK CHẶN (WAF / RATE LIMIT) -> TIẾN HÀNH PHẠT & GIẢI CỨU
         errMsg.includes("rate limit") ||
         errMsg.includes("captcha") ||
         errMsg.includes("blocked") ||
@@ -1206,14 +1226,13 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
         if (proxy !== "local") {
           proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
           if (proxyStrikeCount[proxy] < 4) {
-            proxyCooldown[proxy] = Date.now() + 60000; // Phạt nghỉ 60s
+            proxyCooldown[proxy] = Date.now() + 60000;
             if (proxyHealth[proxy])
               proxyHealth[proxy].status =
                 `Bị chặn Socket (${proxyStrikeCount[proxy]}/3)`;
             safeEmitRadarResult({ channel, status: "REQUEUE" });
             stopWebcast(channel.username);
           } else {
-            // 💡 ĐÃ FIX LỖI CHÍNH TẢ: rozenChannels -> frozenChannels
             frozenChannels[proxy] = {
               channel: channel,
               username: channel.username,
@@ -1232,13 +1251,11 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
             return;
           }
         } else {
-          // Mạng local bị chặn -> Phạt nghỉ 45s rồi Requeue
           proxyCooldown["local"] = Date.now() + 45000;
           safeEmitRadarResult({ channel, status: "REQUEUE" });
           stopWebcast(channel.username);
         }
       } else if (
-        // ⚠️ NHÓM 2: LỖI RỚT MẠNG TỰ NHIÊN -> TUYỆT ĐỐI KHÔNG PHẠT, ĐỂ PROXY LÀM VIỆC TIẾP LUÔN
         errMsg.includes("timeout") ||
         errMsg.includes("network") ||
         errMsg.includes("socket") ||
@@ -1246,7 +1263,6 @@ function startWebcast(channel, proxy, subProfile, rescueCookie = null) {
         errMsg.includes("503") ||
         errMsg.includes("504")
       ) {
-        // Đặt lại trạng thái để trên giao diện UI không bị hiện lỗi
         if (
           proxyHealth[proxy] &&
           !proxyHealth[proxy].status.includes("CHỜ GIẢI CỨU")
@@ -1294,16 +1310,16 @@ setInterval(() => {
       safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
     }
   }
-  for (let proxy in frozenChannels) {
-    // 💡 FIX: Giảm xuống 3 phút. Quá 3 phút không cứu -> Tự hủy và Giết Proxy
+
+  // 💡 FIX 4: Hợp nhất vòng lặp dọn dẹp Proxy đông lạnh
+  const currentFrozen = Object.keys(frozenChannels);
+  for (let proxy of currentFrozen) {
     if (now - frozenChannels[proxy].timestamp > 3 * 60 * 1000) {
       safeEmitRadarResult({
         channel: frozenChannels[proxy].channel,
         status: "REQUEUE",
       });
       delete frozenChannels[proxy];
-
-      // BÁO TỬ PROXY LÊN MASTER ĐỂ XIN CẤP MỚI
       if (masterSocket && masterSocket.connected) {
         masterSocket.emit("worker_report_dead_proxy", {
           proxy: proxy,
@@ -1312,15 +1328,7 @@ setInterval(() => {
       }
     }
   }
-  for (let proxy in frozenChannels) {
-    if (now - frozenChannels[proxy].timestamp > 15 * 60 * 1000) {
-      safeEmitRadarResult({
-        channel: frozenChannels[proxy].channel,
-        status: "REQUEUE",
-      });
-      delete frozenChannels[proxy];
-    }
-  }
+
   for (let user in activeConnections) {
     const conn = activeConnections[user];
     if (now - (conn.lastActive || now) > 30 * 60 * 1000) {
@@ -1328,6 +1336,7 @@ setInterval(() => {
       safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
     }
   }
+
   for (let p of dynamicProxies) {
     if (proxyStrikeCount[p] >= 4 && (proxyUsage[p] || 0) === 0) {
       if (masterSocket && masterSocket.connected)
@@ -1342,9 +1351,36 @@ setInterval(() => {
 
 connectToMaster();
 
+// ========================================================
+// 🛑 TẮT TOOL AN TOÀN (TRẢ LẠI SESSION CHO MASTER)
+// ========================================================
+function handleShutdown(signal) {
+  logWarn(`⚠️ Nhận lệnh ${signal}. Đang trả lại tài nguyên cho Master...`);
+
+  if (masterSocket && masterSocket.connected) {
+    let proxiesToReturn = [...dynamicProxies];
+    if (config.useLocalNetwork)
+      proxiesToReturn.push(`local_VPS_${config.workerName}`);
+
+    if (proxiesToReturn.length > 0) {
+      masterSocket.emit("worker_return_proxies", proxiesToReturn);
+    }
+    // 💡 FIX 1: Dùng đúng tên mảng key
+    if (exclusiveEulerKeys.length > 0) {
+      masterSocket.emit("worker_return_keys", exclusiveEulerKeys);
+    }
+  }
+
+  setTimeout(() => {
+    process.exit(0);
+  }, 1000);
+}
+
 process.on("uncaughtException", (err) => {
   logError(`[CRASH PROTECT] Lỗi không lường trước: ${err.message}`);
 });
 process.on("unhandledRejection", (reason) => {
   logError(`[CRASH PROTECT] Promise bị từ chối: ${reason}`);
 });
+process.on("SIGINT", handleShutdown);
+process.on("SIGTERM", handleShutdown);
