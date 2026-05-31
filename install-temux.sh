@@ -98,13 +98,8 @@ fi
 
 echo "=== Config worker ==="
 
-jq \
---arg worker "$WORKER_NAME" \
-'.workerName = $worker
-| .useLocalNetwork = true
-| .proxyCount = 20
-| .localLoad = 20' \
-vps_config.json > tmp.json && mv tmp.json vps_config.json
+
+sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json || true
 
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
