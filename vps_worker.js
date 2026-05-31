@@ -52,19 +52,17 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
         const newConfig = JSON.parse(fileData);
         let isChanged = false;
 
+        // 💡 FIX 1: Ép kiểu Số nguyên (parseInt) để chống lỗi Nối chữ (VD: 3 + "20" = 320)
+        const parsedLocal = parseInt(newConfig.localLoad);
+        const parsedProxy = parseInt(newConfig.loadPerProxy);
+
         // Kiểm tra và cập nhật các thông số ép tải
-        if (
-          newConfig.localLoad !== undefined &&
-          config.localLoad !== newConfig.localLoad
-        ) {
-          config.localLoad = newConfig.localLoad;
+        if (!isNaN(parsedLocal) && config.localLoad !== parsedLocal) {
+          config.localLoad = parsedLocal;
           isChanged = true;
         }
-        if (
-          newConfig.loadPerProxy !== undefined &&
-          config.loadPerProxy !== newConfig.loadPerProxy
-        ) {
-          config.loadPerProxy = newConfig.loadPerProxy;
+        if (!isNaN(parsedProxy) && config.loadPerProxy !== parsedProxy) {
+          config.loadPerProxy = parsedProxy;
           isChanged = true;
         }
         if (
@@ -81,17 +79,25 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
             `⚙️ Phát hiện file [${CONFIG_FILE}] vừa được sửa, đang cập nhật nóng...`,
           );
 
-          const activeProxiesCount = dynamicProxies.length;
-          let newMaxLoad = activeProxiesCount * config.loadPerProxy;
+          const activeProxiesCount =
+            typeof dynamicProxies !== "undefined" ? dynamicProxies.length : 0;
+          let newMaxLoad = activeProxiesCount * config.loadPerProxy; // Phép nhân
+
           if (config.useLocalNetwork) {
-            newMaxLoad += config.localLoad;
+            newMaxLoad += config.localLoad; // Phép cộng chuẩn (do đã parseInt)
           }
 
           // Bắn lệnh cập nhật lên giao diện UI của Master
           if (masterSocket && masterSocket.connected) {
+            // Lấy danh sách kênh đang chờ check HTTP (tránh Master tưởng rơi rớt)
+            const pendingList =
+              typeof radarQueue !== "undefined"
+                ? radarQueue.map((c) => c.username)
+                : [];
+
             masterSocket.emit("worker_ready", {
               name: config.workerName,
-              type: "vps_node", // Đảm bảo đúng với type worker của bạn
+              type: "vps_node",
               maxLoad: newMaxLoad,
               localLoad: config.localLoad,
               loadPerProxy: config.loadPerProxy,
@@ -99,7 +105,12 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
                 typeof activeSockets !== "undefined"
                   ? Object.keys(activeSockets)
                   : [],
-              pendingChannels: [],
+              pendingChannels: pendingList,
+
+              // 💡 FIX 2: BẮT BUỘC phải gửi kèm danh sách Proxy & Key đang giữ để Master KHÔNG THU HỒI
+              heldProxies:
+                typeof dynamicProxies !== "undefined" ? dynamicProxies : [],
+              heldKeys: typeof eulerKeys !== "undefined" ? eulerKeys : [],
             });
           }
           logSuccess(
@@ -111,7 +122,7 @@ fs.watch(CONFIG_FILE, (eventType, filename) => {
           `⚠️ Lỗi khi đọc file config nóng (Có thể file đang lưu dở): ${err.message}`,
         );
       }
-    }, 5000);
+    }, 2000); // 2000ms là đủ an toàn
   }
 });
 
