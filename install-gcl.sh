@@ -8,10 +8,11 @@ echo "=============================="
 
 WORKER_NAME="$1"
 ENV_CONTENT="$2"
+PROXY_COUNT="$3"
 
-if [ -z "$WORKER_NAME" ] || [ -z "$ENV_CONTENT" ]; then
+if [ -z "$WORKER_NAME" ] || [ -z "$ENV_CONTENT" ] || [ -z "$PROXY_COUNT" ]; then
     echo "Usage:"
-    echo "bash install-gcl.sh <worker_name> <socket_secret>"
+    echo "bash install-gcl.sh <worker_name> <socket_secret> <proxy_count>"
     exit 1
 fi
 
@@ -135,7 +136,11 @@ fi
 
 echo "=== Config worker ==="
 
+# Cập nhật Worker Name
 sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config.json || true
+
+# Cập nhật số lượng Proxy
+sed -i "s/\"proxyCount\": *[0-9]*/\"proxyCount\": $PROXY_COUNT/g" vps_config.json || true
 
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
