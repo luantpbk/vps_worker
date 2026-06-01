@@ -314,6 +314,7 @@ function connectToMaster() {
     reconnection: true,
     reconnectionDelay: 1000,
     transports: ["websocket"],
+    parser: customParser,
   });
 
   masterSocket.on("connect", () => {
