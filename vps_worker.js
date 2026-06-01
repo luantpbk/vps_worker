@@ -10,7 +10,7 @@ const { gotScraping } = require("got-scraping");
 const fs = require("fs");
 
 const CONFIG_FILE = "vps_config.json";
-
+const EULER_RATE = 3; // 1 key cho mỗi 3 proxy để tối ưu hóa hiệu suất
 let config = {
   masterUrl: "http://localhost:3001",
   workerName: `Worker_01`,
@@ -348,7 +348,7 @@ function connectToMaster() {
 
     const neededKeys = Math.max(
       0,
-      Math.ceil(config.proxyCount / 2) - exclusiveEulerKeys.length,
+      Math.ceil(config.proxyCount / EULER_RATE) - exclusiveEulerKeys.length,
     );
     if (neededKeys > 0)
       masterSocket.emit("worker_request_keys", {
