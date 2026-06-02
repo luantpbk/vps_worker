@@ -44,6 +44,7 @@ fs.watch(CONFIG_FILE, (eventType) => {
       try {
         const newConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
         let isChanged = false;
+
         if (
           newConfig.localLoad !== undefined &&
           config.localLoad !== newConfig.localLoad
@@ -65,9 +66,17 @@ fs.watch(CONFIG_FILE, (eventType) => {
           config.useLocalNetwork = newConfig.useLocalNetwork;
           isChanged = true;
         }
+        // 💡 FIX 3: Nạp cấu hình proxyCount mới để Auto-Balancer nhận diện được sự thay đổi
+        if (
+          newConfig.proxyCount !== undefined &&
+          config.proxyCount !== newConfig.proxyCount
+        ) {
+          config.proxyCount = newConfig.proxyCount;
+          isChanged = true;
+        }
 
         if (isChanged && masterSocket?.connected) {
-          logWarn(`⚙️ Cập nhật cấu hình nóng. Max Load thay đổi...`);
+          logWarn(`⚙️ Cập nhật cấu hình nóng. Đang cân bằng lại hệ thống...`);
           checkProxyHealth();
         }
       } catch (err) {}
@@ -83,6 +92,7 @@ let proxyCooldown = {};
 let proxyStrikeCount = {};
 let proxyHealth = {};
 let pendingChecks = new Map();
+let connectionLocks = new Set(); // 💡 FIX 4: Đã khai báo biến chống Ghost Load
 let masterSocket = null;
 let globalFailureCount = 0;
 let workerPausedUntil = 0;
@@ -92,6 +102,7 @@ setInterval(() => {
 }, 120000);
 
 let dynamicProxies = [];
+let zombieProxies = {};
 let exclusiveEulerKeys = [];
 let keyIndex = 0;
 const agentCache = {};
@@ -145,6 +156,22 @@ setInterval(() => {
   console.table(tableData);
   console.log("==========================================\n");
 }, 15000);
+
+// XỬ LÝ XẢ TẢI MỀM (NUÔI ZOMBIE)
+function retireProxy(proxyStr) {
+  dynamicProxies = dynamicProxies.filter((p) => p !== proxyStr);
+  if ((proxyUsage[proxyStr] || 0) > 0) {
+    logWarn(
+      `🧟 Proxy [${getShortProxy(proxyStr)}] bị phế truất nhưng đang gánh ${proxyUsage[proxyStr]} tải. Chuyển sang trạng thái ZOMBIE.`,
+    );
+    zombieProxies[proxyStr] = true;
+  } else {
+    logWarn(
+      `🗑️ Proxy [${getShortProxy(proxyStr)}] bị phế truất (Tải = 0). Dọn dẹp RAM ngay!`,
+    );
+    cleanupProxyData(proxyStr);
+  }
+}
 
 function sendWorkerStatus() {
   if (masterSocket && masterSocket.connected) {
@@ -200,6 +227,7 @@ async function checkProxyHealth() {
           "https://clients3.google.com/generate_204",
           options,
         );
+
         if (healthRes.status === 200 || healthRes.status === 204) {
           currentHealth[p] = { status: "SẴN SÀNG" };
           proxyFailCount[p] = 0;
@@ -210,13 +238,14 @@ async function checkProxyHealth() {
           proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
           if (proxyFailCount[p] >= 3) {
             currentHealth[p].status = "BÁO LỖI";
-            if (masterSocket?.connected)
+            if (masterSocket?.connected) {
               masterSocket.emit("worker_report_dead_proxy", {
                 proxy: p,
                 workerName: config.workerName,
               });
-            dynamicProxies = dynamicProxies.filter((dp) => dp !== p);
-            cleanupProxyData(p);
+            }
+            // 💡 FIX 2: Không chém ngay lập tức, dùng Retire để tránh đứt gãy luồng Live nếu Socket vẫn còn sống
+            retireProxy(p);
           } else proxyCooldown[p] = Date.now() + 20000;
         }
       }
@@ -232,6 +261,7 @@ async function checkProxyHealth() {
     if (proxyHealth[p]?.status === "SẴN SÀNG")
       aliveCount += config.loadPerProxy;
   }
+
   currentDynamicMaxLoad = aliveCount;
   if (masterSocket?.connected)
     masterSocket.emit("worker_update_capacity", {
@@ -247,7 +277,7 @@ function getNextAvailableProxy() {
     : [...dynamicProxies];
   let available = allProxies.filter((p) => {
     if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) return false;
-    if (p !== "local" && proxyStrikeCount[p] >= 4) return false;
+    if (p !== "local" && (proxyStrikeCount[p] || 0) >= 4) return false;
     const isReady = p === "local" || proxyHealth[p]?.status === "SẴN SÀNG";
     const limit = p === "local" ? config.localLoad : config.loadPerProxy;
     return isReady && (proxyUsage[p] || 0) < limit;
@@ -371,7 +401,6 @@ function connectToMaster() {
   });
 
   masterSocket.on("worker_receive_proxies", (assignedProxiesArr) => {
-    // Master V9 gửi trực tiếp mảng string proxy
     assignedProxiesArr.forEach((p) => {
       const proxyStr = typeof p === "string" ? p : p.proxy;
       if (!dynamicProxies.includes(proxyStr)) {
@@ -387,27 +416,29 @@ function connectToMaster() {
   });
 
   masterSocket.on("worker_proxy_replacement", (data) => {
-    dynamicProxies = dynamicProxies.filter((p) => p !== data.deadProxy);
-    cleanupProxyData(data.deadProxy);
+    const { deadProxy, newProxy } = data;
 
-    if (data.newProxy) {
-      const pStr =
-        typeof data.newProxy === "string" ? data.newProxy : data.newProxy.proxy;
-      dynamicProxies.push(pStr);
+    retireProxy(deadProxy); // 💡 Xả tải mềm
+
+    if (newProxy) {
+      const pStr = typeof newProxy === "string" ? newProxy : newProxy.proxy;
+      if (zombieProxies[pStr]) delete zombieProxies[pStr]; // Hồi sinh
+      if (!dynamicProxies.includes(pStr)) dynamicProxies.push(pStr);
+
       proxyStrikeCount[pStr] = 0;
       proxyCooldown[pStr] = 0;
+      if (!proxyHealth) proxyHealth = {};
       proxyHealth[pStr] = { status: "SẴN SÀNG" };
       logSuccess(
-        `🔄 Đổi proxy: Vứt [${getShortProxy(data.deadProxy)}] -> Nạp [${getShortProxy(pStr)}]`,
+        `🔄 Đổi máu: Phế truất [${getShortProxy(deadProxy)}] -> Nạp mới [${getShortProxy(pStr)}]`,
       );
     }
-    checkProxyHealth();
+    updateWorkerCapacity(); // Dùng checkProxyHealth
   });
 
   masterSocket.on("worker_proxy_removed", (proxyStr) => {
-    dynamicProxies = dynamicProxies.filter((p) => p !== proxyStr);
-    cleanupProxyData(proxyStr);
-    logWarn(`🗑️ Master yêu cầu thu hồi Proxy [${getShortProxy(proxyStr)}]`);
+    retireProxy(proxyStr); // 💡 Xả tải mềm
+    logWarn(`🗑️ Lệnh từ Admin: Thu hồi Proxy [${getShortProxy(proxyStr)}]`);
     checkProxyHealth();
   });
 
@@ -444,6 +475,7 @@ function connectToMaster() {
         activeConnections = {};
         assignedProxies = {};
         pendingChecks.clear();
+        connectionLocks.clear();
         disconnectTimer = null;
       }, 600000);
     }
@@ -551,7 +583,10 @@ async function checkLiveStatus(username, proxy) {
 }
 
 async function executeTask(channel) {
-  if (activeConnections[channel.username]) {
+  if (
+    activeConnections[channel.username] ||
+    connectionLocks.has(channel.username)
+  ) {
     pendingChecks.delete(channel.username);
     return;
   }
@@ -560,7 +595,8 @@ async function executeTask(channel) {
   for (let p of dynamicProxies) {
     if (
       proxyHealth[p]?.status === "SẴN SÀNG" &&
-      (!proxyCooldown[p] || Date.now() > proxyCooldown[p])
+      (!proxyCooldown[p] || Date.now() > proxyCooldown[p]) &&
+      (proxyStrikeCount[p] || 0) < 4 // 💡 FIX 6: Tránh dùng Proxy sắp bị phế
     )
       availableProxies.push(p);
   }
@@ -620,9 +656,7 @@ async function executeTask(channel) {
       }, Math.random() * 3000);
     }
   } catch (e) {
-    if (checkProxy !== "local") {
-      proxyCooldown[checkProxy] = Date.now() + 30000;
-    }
+    if (checkProxy !== "local") proxyCooldown[checkProxy] = Date.now() + 30000;
     setTimeout(() => {
       safeEmitRadarResult({ channel, status: "REQUEUE" });
     }, 3000);
@@ -632,7 +666,13 @@ async function executeTask(channel) {
 }
 
 function startWebcast(channel, proxy) {
-  if (activeConnections[channel.username]) return;
+  // 💡 BỌC THÉP: Chặn 2 luồng chui vào cùng 1 username
+  if (
+    activeConnections[channel.username] ||
+    connectionLocks.has(channel.username)
+  )
+    return;
+  connectionLocks.add(channel.username);
 
   const key = getNextEulerKey();
   let conn = new TikTokLiveConnection(channel.username, {
@@ -646,8 +686,7 @@ function startWebcast(channel, proxy) {
       device_platform: "web",
       browser_language: "vi-VN",
       browser_name: "Mozilla",
-      browser_version:
-        "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      browser_version: "124.0.0.0", // 💡 Chuẩn hóa version cho API
     },
   });
 
@@ -678,16 +717,19 @@ function startWebcast(channel, proxy) {
     return false;
   };
 
-  Promise.race([
-    conn.connect(),
-    new Promise((_, r) =>
-      setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 45000),
-    ),
-  ])
+  // 💡 FIX 5: Xóa rác Timer của Promise Race tránh Memory Leak
+  let timeoutHandle;
+  const timeoutPromise = new Promise((_, r) => {
+    timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 45000);
+  });
+
+  Promise.race([conn.connect(), timeoutPromise])
     .then((state) => {
+      clearTimeout(timeoutHandle);
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
       proxyStrikeCount[proxy] = 0;
+
       conn.on("warn", (err) => checkAndReportDeadKey(err, key));
       conn.on("error", (err) => checkAndReportDeadKey(err, key));
 
@@ -727,6 +769,7 @@ function startWebcast(channel, proxy) {
       });
     })
     .catch((err) => {
+      clearTimeout(timeoutHandle);
       checkAndReportDeadKey(err, key);
       let errMsg = String(err?.message || err).toLowerCase();
 
@@ -736,7 +779,6 @@ function startWebcast(channel, proxy) {
         errMsg.includes("ended")
       ) {
         safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
-        stopWebcast(channel.username);
       } else if (
         errMsg.includes("rate limit") ||
         errMsg.includes("captcha") ||
@@ -755,41 +797,47 @@ function startWebcast(channel, proxy) {
           proxyCooldown["local"] = Date.now() + 45000;
           safeEmitRadarResult({ channel, status: "REQUEUE" });
         }
-        stopWebcast(channel.username);
       } else {
         safeEmitRadarResult({ channel, status: "REQUEUE" });
-        stopWebcast(channel.username);
       }
+      stopWebcast(channel.username);
     });
 }
 
 function stopWebcast(user) {
-  // 1. GIẢI PHÓNG PROXY NGAY LẬP TỨC (Dù có socket hay không)
+  // 1. GIẢI PHÓNG PROXY & KHÓA NGAY LẬP TỨC
   const realProxy = assignedProxies[user];
   if (realProxy) {
     proxyUsage[realProxy] = Math.max(0, (proxyUsage[realProxy] || 0) - 1);
     delete assignedProxies[user];
+
+    if (zombieProxies[realProxy] && proxyUsage[realProxy] === 0) {
+      logInfo(
+        `👻 Proxy Zombie [${getShortProxy(realProxy)}] đã xả xong tải. Dọn dẹp RAM!`,
+      );
+      cleanupProxyData(realProxy);
+      delete zombieProxies[realProxy];
+    }
   }
 
-  // 2. Dọn dẹp hàng đợi check
   pendingChecks.delete(user);
+  connectionLocks.delete(user); // 💡 Rút khóa chống đúp
 
-  // 3. Dọn dẹp Connection (Nếu có)
+  // 2. Dọn dẹp Connection
   const conn = activeConnections[user];
-  if (conn) {
-    delete activeConnections[user];
+  if (!conn) return;
+  delete activeConnections[user];
 
-    setImmediate(() => {
-      try {
-        conn.removeAllListeners();
-        conn.disconnect();
-        if (conn.client) {
-          conn.client.removeAllListeners();
-          if (conn.client.ws) conn.client.ws.terminate();
-        }
-      } catch (e) {}
-    });
-  }
+  setImmediate(() => {
+    try {
+      conn.removeAllListeners();
+      conn.disconnect();
+      if (conn.client) {
+        conn.client.removeAllListeners();
+        if (conn.client.ws) conn.client.ws.terminate();
+      }
+    } catch (e) {}
+  });
 }
 
 setInterval(() => {
@@ -797,6 +845,7 @@ setInterval(() => {
   for (let [user, timestamp] of pendingChecks.entries()) {
     if (now - timestamp > 45000) {
       pendingChecks.delete(user);
+      connectionLocks.delete(user);
       safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
     }
   }
@@ -809,6 +858,54 @@ setInterval(() => {
     }
   }
 }, 30000);
+
+// ========================================================
+// 💡 AUTO-BALANCER: TỰ ĐỘNG BÙ/TRẢ PROXY & KEYS HOÀN HẢO
+// ========================================================
+setInterval(() => {
+  if (masterSocket && masterSocket.connected) {
+    const targetProxyCount = config.proxyCount || 0;
+    const currentProxyCount = dynamicProxies.length;
+
+    if (currentProxyCount < targetProxyCount) {
+      const needed = targetProxyCount - currentProxyCount;
+      logWarn(
+        `🔄 Kho Proxy đang thiếu ${needed} cái (${currentProxyCount}/${targetProxyCount}). Xin Master cấp bù...`,
+      );
+      masterSocket.emit("worker_request_proxies", {
+        count: needed,
+        workerName: config.workerName,
+      });
+    } else if (currentProxyCount > targetProxyCount) {
+      const excessCount = currentProxyCount - targetProxyCount;
+      // 💡 FIX 2: Không được cắt trực tiếp mảng bằng splice, tạo bản sao (slice) và dùng retireProxy để xả mềm
+      const excessProxies = [...dynamicProxies].slice(-excessCount);
+      logWarn(
+        `🗑️ Thừa ${excessCount} Proxy so với cấu hình. Đang trả lại Master...`,
+      );
+
+      masterSocket.emit("worker_return_proxies", excessProxies);
+      excessProxies.forEach((p) => retireProxy(p));
+      checkProxyHealth();
+    }
+
+    // 💡 FIX 1: Dùng đúng EULER_RATE (4) để cân bằng Key
+    const targetKeyCount = Math.ceil(targetProxyCount / EULER_RATE);
+    const currentKeyCount = exclusiveEulerKeys.length;
+
+    if (currentKeyCount < targetKeyCount) {
+      const neededKeys = targetKeyCount - currentKeyCount;
+      masterSocket.emit("worker_request_keys", {
+        count: neededKeys,
+        workerName: config.workerName,
+      });
+    } else if (currentKeyCount > targetKeyCount) {
+      const countToDrop = currentKeyCount - targetKeyCount;
+      const excessKeys = exclusiveEulerKeys.splice(-countToDrop);
+      masterSocket.emit("worker_return_keys", excessKeys);
+    }
+  }
+}, 20000);
 
 connectToMaster();
 
