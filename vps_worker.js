@@ -10,7 +10,7 @@ const { gotScraping } = require("got-scraping");
 const fs = require("fs");
 
 const CONFIG_FILE = "vps_config.json";
-const EULER_RATE = 3; // 1 key cho mỗi 3 proxy để tối ưu hóa hiệu suất
+const EULER_RATE = 4; // 1 key cho mỗi 4 proxy để tối ưu hóa hiệu suất
 let config = {
   masterUrl: "http://localhost:3001",
   workerName: `Worker_01`,
@@ -764,26 +764,32 @@ function startWebcast(channel, proxy) {
 }
 
 function stopWebcast(user) {
-  const conn = activeConnections[user];
-  if (!conn) return;
-  delete activeConnections[user];
-  pendingChecks.delete(user);
+  // 1. GIẢI PHÓNG PROXY NGAY LẬP TỨC (Dù có socket hay không)
   const realProxy = assignedProxies[user];
   if (realProxy) {
     proxyUsage[realProxy] = Math.max(0, (proxyUsage[realProxy] || 0) - 1);
     delete assignedProxies[user];
   }
 
-  setImmediate(() => {
-    try {
-      conn.removeAllListeners();
-      conn.disconnect();
-      if (conn.client) {
-        conn.client.removeAllListeners();
-        if (conn.client.ws) conn.client.ws.terminate();
-      }
-    } catch (e) {}
-  });
+  // 2. Dọn dẹp hàng đợi check
+  pendingChecks.delete(user);
+
+  // 3. Dọn dẹp Connection (Nếu có)
+  const conn = activeConnections[user];
+  if (conn) {
+    delete activeConnections[user];
+
+    setImmediate(() => {
+      try {
+        conn.removeAllListeners();
+        conn.disconnect();
+        if (conn.client) {
+          conn.client.removeAllListeners();
+          if (conn.client.ws) conn.client.ws.terminate();
+        }
+      } catch (e) {}
+    });
+  }
 }
 
 setInterval(() => {
