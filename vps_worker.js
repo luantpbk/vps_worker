@@ -835,20 +835,29 @@ function startWebcast(channel, proxy) {
         ? errObj
         : errObj?.message || JSON.stringify(errObj);
     const msg = String(errText).toLowerCase();
+
+    // 💡 BỔ SUNG: Các từ khóa nhận diện Key hết hạn/hết limit của EulerStream
     const isDeadKey =
       msg.includes("balance") ||
       msg.includes("quota") ||
       msg.includes("invalid api key") ||
       msg.includes("unauthorized") ||
       msg.includes("sign error") ||
-      msg.includes("401");
+      msg.includes("401") ||
+      msg.includes("rate limit") ||
+      msg.includes("upgrade") ||
+      msg.includes("too many connections");
+
     if (isDeadKey) {
+      logWarn(
+        `🔑 [DEAD KEY] Phát hiện Key Euler [${targetKey.substring(0, 10)}...] đã kiệt sức. Yêu cầu đổi mới!`,
+      );
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
           workerName: config.workerName,
         });
-      return true;
+      return true; // Trả về true để báo là lỗi do Key
     }
     return false;
   };
@@ -908,11 +917,18 @@ function startWebcast(channel, proxy) {
     })
     .catch((err) => {
       clearTimeout(timeoutHandle);
-      checkAndReportDeadKey(err, key);
+      // 💡 Lấy kết quả xem có phải lỗi do Key không
+      const isKeyDead = checkAndReportDeadKey(err, key);
       let errMsg = String(err?.message || err).toLowerCase();
-      logError(
-        `❌ [${channel.username}] Kết nối WebSocket thất bại - Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
-      );
+
+      // 💡 FIX QUAN TRỌNG: Nếu lỗi là do Key, TRẮNG ÁN CHO PROXY.
+      // Không được để code chạy xuống dưới vì chữ "rate limit" sẽ làm Proxy bị phạt oan!
+      if (isKeyDead) {
+        safeEmitRadarResult({ channel, status: "REQUEUE" });
+        stopWebcast(channel.username);
+        return;
+      }
+
       if (
         errMsg.includes("not found") ||
         errMsg.includes("offline") ||
