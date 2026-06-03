@@ -234,7 +234,6 @@ async function checkProxyHealth() {
           timeout: { request: 10000 },
           throwHttpErrors: false,
           retry: { limit: 0 },
-          http2: false,
           headers: {
             "User-Agent": "curl/7.81.0", // Không cần giả lập Chrome nặng nề khi Ping
           },
@@ -612,112 +611,121 @@ setInterval(async () => {
 async function checkLiveStatus(username, proxy) {
   let proxyUrlGot = proxy === "local" ? undefined : formatProxyUrl(proxy);
   const urlUsername = username.startsWith("@") ? username : `@${username}`;
+  let retries = 1;
+  while (retries >= 0) {
+    try {
+      const fetchPromise = gotScraping({
+        url: `https://www.tiktok.com/${urlUsername}/live`,
+        proxyUrl: proxyUrlGot,
+        timeout: { request: 12000 },
+        throwHttpErrors: false,
+        http2: true, // 💡 BẮT BUỘC PHẢI CÓ ĐỂ QUA MẶT TIKTOK
+        retry: { limit: 0 },
+        headerGeneratorOptions: {
+          browsers: [{ name: "chrome", minVersion: 120 }],
+          devices: ["desktop"],
+          locales: ["vi-VN", "en-US"],
+        },
+      });
 
-  try {
-    const fetchPromise = gotScraping({
-      url: `https://www.tiktok.com/${urlUsername}/live`,
-      proxyUrl: proxyUrlGot,
-      timeout: { request: 12000 },
-      throwHttpErrors: false,
-      http2: true, // 💡 BẮT BUỘC PHẢI CÓ ĐỂ QUA MẶT TIKTOK
-      retry: { limit: 0 },
-      headerGeneratorOptions: {
-        browsers: [{ name: "chrome", minVersion: 120 }],
-        devices: ["desktop"],
-        locales: ["vi-VN", "en-US"],
-      },
-    });
+      // 💡 LỚP GIÁP 1: Ép timeout cứng 15s phòng trường hợp thư viện got bị treo ngầm
+      let timeoutHandle;
+      const hardTimeout = new Promise((_, r) => {
+        timeoutHandle = setTimeout(() => r(new Error("HARD_TIMEOUT")), 15000);
+      });
 
-    // 💡 LỚP GIÁP 1: Ép timeout cứng 15s phòng trường hợp thư viện got bị treo ngầm
-    let timeoutHandle;
-    const hardTimeout = new Promise((_, r) => {
-      timeoutHandle = setTimeout(() => r(new Error("HARD_TIMEOUT")), 15000);
-    });
+      const res = await Promise.race([fetchPromise, hardTimeout]);
+      clearTimeout(timeoutHandle);
 
-    const res = await Promise.race([fetchPromise, hardTimeout]);
-    clearTimeout(timeoutHandle);
+      // 💡 LỚP GIÁP 2: Bị TikTok chặn HTTP (Giới hạn request)
+      if ([403, 429].includes(res.statusCode)) {
+        logWarn(
+          `[TIKTOK BLOCK] HTTP ${res.statusCode} chặn kết nối - Proxy: ${getShortProxy(proxy)}`,
+        );
+        return "RATE_LIMIT";
+      }
 
-    // 💡 LỚP GIÁP 2: Bị TikTok chặn HTTP (Giới hạn request)
-    if ([403, 429].includes(res.statusCode)) {
-      logWarn(
-        `[TIKTOK BLOCK] HTTP ${res.statusCode} chặn kết nối - Proxy: ${getShortProxy(proxy)}`,
-      );
-      return "RATE_LIMIT";
+      // 💡 LỚP GIÁP 3: Do Proxy hết hạn, lỗi mạng
+      if (
+        [407, 502, 503, 504].includes(res.statusCode) ||
+        res.statusCode >= 500
+      ) {
+        logWarn(
+          `[PROXY ERROR] HTTP ${res.statusCode} Proxy chết yếu - Proxy: ${getShortProxy(proxy)}`,
+        );
+        return "PROXY_ERR";
+      }
+
+      if (res.statusCode === 404) return "NOT_FOUND";
+
+      const finalUrl = (res.url || "").toLowerCase();
+      if (
+        finalUrl.includes("login") ||
+        finalUrl.includes("verify") ||
+        finalUrl.includes("captcha")
+      ) {
+        logWarn(
+          `[TIKTOK CAPTCHA] Bị ép giải Captcha URL - Proxy: ${getShortProxy(proxy)}`,
+        );
+        return "CAPTCHA";
+      }
+
+      const html =
+        typeof res.body === "string"
+          ? res.body
+          : JSON.stringify(res.body || "");
+
+      // 💡 LỚP GIÁP 4: Bị Cloudflare chặn ngầm (Bắt được lỗi 200 OK ảo)
+      if (
+        html.includes("Just a moment...") ||
+        html.includes("Challenge Validation") ||
+        html.includes("cf-browser-verification")
+      ) {
+        logWarn(
+          `[CLOUDFLARE WAF] Bị chặn ngầm (Bot Detect) - Proxy: ${getShortProxy(proxy)}`,
+        );
+        return "RATE_LIMIT";
+      }
+
+      if (
+        html.includes('"statusCode":10000') ||
+        html.includes("webapp.not-found")
+      )
+        return "NOT_FOUND";
+
+      const isLiveFlag =
+        html.includes('"status":2') || html.includes('"isLive":true');
+      const roomMatch = html.match(/"(?:roomId|room_id)"\s*:\s*"?([1-9]\d+)"?/);
+      if (roomMatch && roomMatch[1] && isLiveFlag) return "LIVE";
+
+      return "OFFLINE";
+    } catch (error) {
+      retries--;
+      if (retries < 0) {
+        // 💡 LỚP GIÁP 5: Bắt lỗi treo máy hoặc hết tiền
+        if (error.message === "HARD_TIMEOUT") {
+          logWarn(
+            `[HARD TIMEOUT] Treo kết nối quá 15s - Proxy: ${getShortProxy(proxy)}`,
+          );
+          return "NETWORK_ERR";
+        }
+
+        logWarn(
+          `[NETWORK/TIMEOUT] Lỗi ngầm - Proxy: ${getShortProxy(proxy)} | Lỗi: ${error.message}`,
+        );
+
+        if (
+          error.message.includes("402") ||
+          error.message.includes("407") ||
+          error.message.includes("Payment")
+        ) {
+          return "FATAL_PROXY_BILLING";
+        }
+        return "NETWORK_ERR";
+      }
+      // Nghỉ 1 giây trước khi thử lại
+      await new Promise((r) => setTimeout(r, 1000));
     }
-
-    // 💡 LỚP GIÁP 3: Do Proxy hết hạn, lỗi mạng
-    if (
-      [407, 502, 503, 504].includes(res.statusCode) ||
-      res.statusCode >= 500
-    ) {
-      logWarn(
-        `[PROXY ERROR] HTTP ${res.statusCode} Proxy chết yếu - Proxy: ${getShortProxy(proxy)}`,
-      );
-      return "PROXY_ERR";
-    }
-
-    if (res.statusCode === 404) return "NOT_FOUND";
-
-    const finalUrl = (res.url || "").toLowerCase();
-    if (
-      finalUrl.includes("login") ||
-      finalUrl.includes("verify") ||
-      finalUrl.includes("captcha")
-    ) {
-      logWarn(
-        `[TIKTOK CAPTCHA] Bị ép giải Captcha URL - Proxy: ${getShortProxy(proxy)}`,
-      );
-      return "CAPTCHA";
-    }
-
-    const html =
-      typeof res.body === "string" ? res.body : JSON.stringify(res.body || "");
-
-    // 💡 LỚP GIÁP 4: Bị Cloudflare chặn ngầm (Bắt được lỗi 200 OK ảo)
-    if (
-      html.includes("Just a moment...") ||
-      html.includes("Challenge Validation") ||
-      html.includes("cf-browser-verification")
-    ) {
-      logWarn(
-        `[CLOUDFLARE WAF] Bị chặn ngầm (Bot Detect) - Proxy: ${getShortProxy(proxy)}`,
-      );
-      return "RATE_LIMIT";
-    }
-
-    if (
-      html.includes('"statusCode":10000') ||
-      html.includes("webapp.not-found")
-    )
-      return "NOT_FOUND";
-
-    const isLiveFlag =
-      html.includes('"status":2') || html.includes('"isLive":true');
-    const roomMatch = html.match(/"(?:roomId|room_id)"\s*:\s*"?([1-9]\d+)"?/);
-    if (roomMatch && roomMatch[1] && isLiveFlag) return "LIVE";
-
-    return "OFFLINE";
-  } catch (error) {
-    // 💡 LỚP GIÁP 5: Bắt lỗi treo máy hoặc hết tiền
-    if (error.message === "HARD_TIMEOUT") {
-      logWarn(
-        `[HARD TIMEOUT] Treo kết nối quá 15s - Proxy: ${getShortProxy(proxy)}`,
-      );
-      return "NETWORK_ERR";
-    }
-
-    logWarn(
-      `[NETWORK/TIMEOUT] Lỗi ngầm - Proxy: ${getShortProxy(proxy)} | Lỗi: ${error.message}`,
-    );
-
-    if (
-      error.message.includes("402") ||
-      error.message.includes("407") ||
-      error.message.includes("Payment")
-    ) {
-      return "FATAL_PROXY_BILLING";
-    }
-    return "NETWORK_ERR";
   }
 }
 
