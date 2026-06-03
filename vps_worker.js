@@ -346,7 +346,12 @@ function connectToMaster() {
     transports: ["websocket"],
     parser: customParser,
   });
-
+  // 💡 BỔ SUNG: Bắt lỗi kết nối để in ra màn hình
+  masterSocket.on("connect_error", (err) => {
+    logError(
+      `LỖI KẾT NỐI MASTER: ${err.message}. Hãy kiểm tra IP hoặc Mật khẩu!`,
+    );
+  });
   masterSocket.on("connect", () => {
     logSuccess("Đã kết nối tới Master Hub (Pure Dispatcher)!");
     if (disconnectTimer) {
@@ -433,7 +438,7 @@ function connectToMaster() {
         `🔄 Đổi máu: Phế truất [${getShortProxy(deadProxy)}] -> Nạp mới [${getShortProxy(pStr)}]`,
       );
     }
-    updateWorkerCapacity(); // Dùng checkProxyHealth
+    checkProxyHealth();
   });
 
   masterSocket.on("worker_proxy_removed", (proxyStr) => {
