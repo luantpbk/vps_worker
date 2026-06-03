@@ -225,25 +225,35 @@ async function checkProxyHealth() {
           currentHealth[p] = { status: `ĐANG NGHỈ (${remain}s)` };
           return;
         }
-        let options = { timeout: 8000, validateStatus: () => true };
-        if (p !== "local") {
-          const proxyAgent = getCachedAgent(p);
-          options.httpAgent = proxyAgent;
-          options.httpsAgent = proxyAgent;
-        }
-        const healthRes = await axios.get(
-          "https://clients3.google.com/generate_204",
-          options,
-        );
 
-        if (healthRes.status === 200 || healthRes.status === 204) {
+        let proxyUrlGot = p === "local" ? undefined : formatProxyUrl(p);
+        const healthRes = await gotScraping({
+          url: "https://clients3.google.com/generate_204",
+          proxyUrl: proxyUrlGot,
+          timeout: { request: 10000 },
+          throwHttpErrors: false,
+          retry: { limit: 0 },
+          http2: false, // 💡 CHÌA KHÓA: Ép dùng HTTP/1.1 (Giống hệt lệnh curl của bạn)
+          headers: {
+            "User-Agent": "curl/7.81.0", // Không cần giả lập Chrome nặng nề khi Ping
+          },
+        });
+
+        if (healthRes.statusCode === 200 || healthRes.statusCode === 204) {
           currentHealth[p] = { status: "SẴN SÀNG" };
           proxyFailCount[p] = 0;
-        } else throw new Error("Lỗi Ping");
+        } else {
+          throw new Error(`Mã lỗi HTTP ${healthRes.statusCode}`);
+        }
       } catch (e) {
         currentHealth[p] = { status: "MẤT KẾT NỐI" };
         if (p !== "local") {
           proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
+
+          logWarn(
+            `[PING LỖI] Proxy [${getShortProxy(p)}] không kết nối được Google (Lần ${proxyFailCount[p]}/3). Lỗi: ${e.message}`,
+          );
+
           if (proxyFailCount[p] === 3) {
             currentHealth[p].status = "BÁO LỖI";
             if (masterSocket?.connected)
@@ -256,7 +266,6 @@ async function checkProxyHealth() {
             proxyCooldown[p] = Date.now() + 20000;
           }
         } else {
-          // Phạt local nghỉ 20s nếu VPS mất kết nối Google
           proxyCooldown["local"] = Date.now() + 20000;
         }
       }
