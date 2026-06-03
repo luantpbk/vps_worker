@@ -248,21 +248,37 @@ async function checkProxyHealth() {
       } catch (e) {
         currentHealth[p] = { status: "MẤT KẾT NỐI" };
         if (p !== "local") {
+          // 💡 Nếu Proxy này đã bị tử hình từ luồng check trước đó rồi thì bỏ qua
+          if (proxyFailCount[p] < 0) return;
+
           proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
+
+          // 💡 FAST-KILL: Phát hiện lỗi hết tiền/hết hạn băng thông khi Ping Google
+          if (
+            e.message.includes("402") ||
+            e.message.includes("407") ||
+            e.message.includes("Payment")
+          ) {
+            proxyFailCount[p] = 3; // Ép lên thẳng 3 gậy để tử hình luôn
+          }
 
           logWarn(
             `[PING LỖI] Proxy [${getShortProxy(p)}] không kết nối được Google (Lần ${proxyFailCount[p]}/3). Lỗi: ${e.message}`,
           );
 
-          if (proxyFailCount[p] === 3) {
+          // 💡 Sửa từ "=== 3" thành ">= 3" để chống nhảy cóc (Bug Bất Tử)
+          if (proxyFailCount[p] >= 3) {
             currentHealth[p].status = "BÁO LỖI";
             if (masterSocket?.connected)
               masterSocket.emit("worker_report_dead_proxy", {
                 proxy: p,
                 workerName: config.workerName,
               });
-            retireProxy(p);
-          } else if (proxyFailCount[p] < 3) {
+
+            retireProxy(p); // Vứt ngay lập tức
+
+            proxyFailCount[p] = -9999; // Cờ hiệu: Đã tử hình, cấm đếm tiếp!
+          } else {
             proxyCooldown[p] = Date.now() + 20000;
           }
         } else {
