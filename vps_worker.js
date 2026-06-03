@@ -234,7 +234,7 @@ async function checkProxyHealth() {
           timeout: { request: 10000 },
           throwHttpErrors: false,
           retry: { limit: 0 },
-          http2: true,
+          http2: false,
           headers: {
             "User-Agent": "curl/7.81.0", // Không cần giả lập Chrome nặng nề khi Ping
           },
@@ -482,6 +482,42 @@ function connectToMaster() {
     retireProxy(proxyStr); // 💡 Xả tải mềm
     logWarn(`🗑️ Lệnh từ Admin: Thu hồi Proxy [${getShortProxy(proxyStr)}]`);
     checkProxyHealth();
+  });
+
+  // ==========================================
+  // 💡 BỔ SUNG: LẮNG NGHE LỆNH ĐIỀU KHIỂN CỤC BỘ
+  // ==========================================
+  masterSocket.on("cmd_pause_worker", () => {
+    logWarn(
+      "⏸️ Nhận lệnh TẠM DỪNG từ Master. Ngừng nhận kênh mới, chờ xả tải dần...",
+    );
+    workerPausedUntil = Infinity; // Khóa chức năng lấy việc
+  });
+
+  masterSocket.on("cmd_resume_worker", () => {
+    logSuccess("▶️ Nhận lệnh TIẾP TỤC từ Master. Bắt đầu nhận kênh mới!");
+    workerPausedUntil = 0; // Mở khóa chức năng lấy việc
+  });
+
+  masterSocket.on("cmd_stop_worker", () => {
+    logWarn(
+      "⏹️ Nhận lệnh DỪNG HẲN (STOP) từ Master. Rút điện toàn bộ hệ thống!",
+    );
+    workerPausedUntil = Infinity; // Khóa lấy việc
+
+    // 1. Xóa sạch hàng đợi chưa kịp check
+    localTaskQueue = [];
+
+    // 2. Ép ngắt kết nối (Rút ống thở) TOÀN BỘ các kênh đang LIVE
+    const runningUsers = Object.keys(activeConnections);
+    runningUsers.forEach((user) => {
+      safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
+      stopWebcast(user);
+    });
+
+    // 3. Xóa các khóa check
+    pendingChecks.clear();
+    connectionLocks.clear();
   });
 
   masterSocket.on("process_task", (channel) => {
@@ -815,7 +851,7 @@ function startWebcast(channel, proxy) {
     signApiKey: key,
     webClientOptions: { httpsAgent: getCachedAgent(proxy) },
     websocketOptions: { agent: getCachedAgent(proxy) },
-    processInitialData: false,
+    processInitialData: true,
     fetchRoomInfoOnConnect: true,
     enableExtendedGiftInfo: false,
     clientParams: {
@@ -826,7 +862,9 @@ function startWebcast(channel, proxy) {
     },
   });
 
+  // 💡 KHAI BÁO CÁC BIẾN CỤC BỘ CHO PHÒNG NÀY
   let currentViewers = 0;
+  let isProcessingInitial = true; // 💡 Cờ nhận diện rương treo mặc định bật khi mới vào
 
   const checkAndReportDeadKey = (errObj, targetKey) => {
     if (!targetKey) return false;
@@ -861,8 +899,55 @@ function startWebcast(channel, proxy) {
     }
     return false;
   };
+  // 💡 LẮNG NGHE SỰ KIỆN TRƯỚC KHI CONNECT ĐỂ BẮT RƯƠNG TREO NGAY LẬP TỨC
+  const catchTreasureBox = (data) => {
+    if (activeConnections[channel.username]) {
+      activeConnections[channel.username].lastActive = Date.now();
+    }
 
-  // 💡 FIX 5: Xóa rác Timer của Promise Race tránh Memory Leak
+    const boxData = data?.envelopeInfo || data?.treasureBoxData || data;
+    const coins = boxData?.diamondCount || boxData?.coin || boxData?.coins || 0;
+    const boxes =
+      boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
+
+    if (coins > 0) {
+      masterSocket.emit("worker_chest_raw", {
+        channel,
+        coins: coins,
+        boxes: boxes,
+        idc: boxData?.envelopeIdc || boxData?.id || boxData?.treasureId || "",
+        workerName: config.workerName,
+        liveRegion: channel.country || "unknown", // Dùng quốc gia ở DB phòng khi chưa load xong roomInfo
+        unpackAt: boxData?.unpackAt || boxData?.openTime,
+        viewers: currentViewers,
+        roomId: "", // Master có cơ chế tự dự phòng an toàn
+        workerTime: Date.now(),
+        isHanging: isProcessingInitial, // 💡 Bắn cờ Rương Treo lên Master
+      });
+    }
+  };
+
+  conn.on("envelope", catchTreasureBox);
+  conn.on("treasureBox", catchTreasureBox);
+  conn.on("treasure_box", catchTreasureBox);
+
+  conn.on("roomUser", (userData) => {
+    if (activeConnections[channel.username])
+      activeConnections[channel.username].lastActive = Date.now();
+    if (userData?.viewerCount) currentViewers = userData.viewerCount;
+  });
+
+  conn.on("warn", (err) => checkAndReportDeadKey(err, key));
+  conn.on("error", (err) => checkAndReportDeadKey(err, key));
+  conn.on("streamEnd", () => {
+    stopWebcast(channel.username);
+    safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
+  });
+  conn.on("disconnected", () => {
+    stopWebcast(channel.username);
+    safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
+  });
+
   let timeoutHandle;
   const timeoutPromise = new Promise((_, r) => {
     timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 45000);
@@ -877,43 +962,10 @@ function startWebcast(channel, proxy) {
       logSuccess(
         `✅ [${channel.username}] Đã kết nối WebSocket (${getShortProxy(proxy)})`,
       );
-      conn.on("warn", (err) => checkAndReportDeadKey(err, key));
-      conn.on("error", (err) => checkAndReportDeadKey(err, key));
-
-      conn.on("roomUser", (userData) => {
-        if (activeConnections[channel.username])
-          activeConnections[channel.username].lastActive = Date.now();
-        if (userData?.viewerCount) currentViewers = userData.viewerCount;
-      });
-
-      conn.on("envelope", (data) => {
-        if (activeConnections[channel.username])
-          activeConnections[channel.username].lastActive = Date.now();
-        if (data?.envelopeInfo?.diamondCount > 0) {
-          masterSocket.emit("worker_chest_raw", {
-            channel,
-            coins: data.envelopeInfo.diamondCount,
-            boxes: data.envelopeInfo.peopleCount,
-            idc: data.envelopeInfo.envelopeIdc,
-            workerName: config.workerName,
-            liveRegion:
-              state?.roomInfo?.owner?.region || channel.country || "unknown",
-            unpackAt: data.envelopeInfo.unpackAt,
-            viewers: currentViewers,
-            roomId: state?.roomId || state?.roomInfo?.room_id || "",
-            workerTime: Date.now(),
-          });
-        }
-      });
-
-      conn.on("streamEnd", () => {
-        stopWebcast(channel.username);
-        safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
-      });
-      conn.on("disconnected", () => {
-        stopWebcast(channel.username);
-        safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
-      });
+      // 💡 NÚT THẮT QUAN TRỌNG: Đợi 5 giây để Tool xử lý xong rương treo, sau đó tắt cờ
+      setTimeout(() => {
+        isProcessingInitial = false;
+      }, 5000);
     })
     .catch((err) => {
       clearTimeout(timeoutHandle);
