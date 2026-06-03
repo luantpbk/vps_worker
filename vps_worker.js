@@ -899,26 +899,42 @@ function startWebcast(channel, proxy) {
         : errObj?.message || JSON.stringify(errObj);
     const msg = String(errText).toLowerCase();
 
-    // 💡 BỔ SUNG: Các từ khóa nhận diện Key hết hạn/hết limit của EulerStream
-    const isDeadKey =
-      msg.includes("insufficient balance") || // Hết tiền
-      msg.includes("invalid api key") || // Sai key
-      msg.includes("rate limit for your plan") || // Hết quota gói (Đặc trưng Euler)
-      msg.includes("rate_limit_account_day") || // Hết quota ngày (Đặc trưng Euler)
-      msg.includes("rate_limit_concurrency") || // Full slot (Đặc trưng Euler)
-      msg.includes("too many connections") || // Full slot
-      msg.includes("upgrade at https") || // Đòi nâng cấp
-      msg.includes("unexpected server response: 200"); // Lỗi máy chủ Euler 200 OK
+    // 💡 1. NHÓM LỖI CHẾT HẲN (Hết tiền, sai key, hết ngạch ngày) -> XÓA KEY
+    const isFatalKey =
+      msg.includes("insufficient balance") ||
+      msg.includes("invalid api key") ||
+      msg.includes("rate limit for your plan") ||
+      msg.includes("rate_limit_account_day") ||
+      msg.includes("upgrade at https");
 
-    if (isDeadKey) {
-      logError(`🔑 PHÁT HIỆN KEY CHẾT: ${errText}`);
+    // 💡 2. NHÓM LỖI QUÁ TẢI TẠM THỜI (Full slot, spam nhanh) -> GIỮ LẠI KEY, CHỈ TẠM DỪNG CẮM
+    const isOverloadedKey =
+      msg.includes("too many connections") ||
+      msg.includes("rate_limit_concurrency") ||
+      msg.includes("unexpected server response: 200");
+
+    // Xử lý nếu Key chết hẳn
+    if (isFatalKey) {
+      logWarn(
+        `[❌] 🔑 PHÁT HIỆN KEY CHẾT HẲN [${targetKey.substring(0, 10)}...]. Yêu cầu Master xóa bỏ!`,
+      );
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
           workerName: config.workerName,
         });
-      return true; // Trả về true để báo là lỗi do Key
+      return true; // Trả về true để Tool ngắt kết nối kênh này
     }
+
+    // Xử lý nếu Key chỉ đang quá tải
+    if (isOverloadedKey) {
+      logWarn(
+        `[⚠️] ⏳ KEY QUÁ TẢI [${targetKey.substring(0, 10)}...]. Đang làm việc quá sức, tha cho nó nghỉ 1 lát!`,
+      );
+      // KHÔNG báo lên Master (để Master không xóa Key), chỉ trả về true để ngắt kênh hiện tại ném lại vào hàng đợi
+      return true;
+    }
+
     return false;
   };
   // 💡 LẮNG NGHE SỰ KIỆN TRƯỚC KHI CONNECT ĐỂ BẮT RƯƠNG TREO NGAY LẬP TỨC
