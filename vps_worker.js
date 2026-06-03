@@ -958,8 +958,7 @@ function startWebcast(channel, proxy) {
         liveRegion: channel.country || "unknown", // Dùng quốc gia ở DB phòng khi chưa load xong roomInfo
         unpackAt: boxData?.unpackAt || boxData?.openTime,
         viewers: currentViewers,
-        roomId:
-          conn.getState()?.roomId || conn.getState()?.roomInfo?.room_id || "",
+        roomId: data?.roomId || data?.roomInfo?.room_id || "",
         workerTime: Date.now(),
         isHanging: isProcessingInitial, // 💡 Bắn cờ Rương Treo lên Master
       });
