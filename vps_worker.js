@@ -117,7 +117,7 @@ function getShortProxy(p) {
   return String(p);
 }
 
-const ENABLE_DEBUG = process.env.DEBUG === "true";
+const ENABLE_DEBUG = process.env.DEBUG || process.env.DEBUG === "true";
 function logInfo(msg) {
   if (ENABLE_DEBUG) console.log(`[ℹ️] ${msg}`);
 }
@@ -233,7 +233,7 @@ async function checkProxyHealth() {
           timeout: { request: 10000 },
           throwHttpErrors: false,
           retry: { limit: 0 },
-          http2: false, // 💡 CHÌA KHÓA: Ép dùng HTTP/1.1 (Giống hệt lệnh curl của bạn)
+          http2: true,
           headers: {
             "User-Agent": "curl/7.81.0", // Không cần giả lập Chrome nặng nề khi Ping
           },
@@ -576,11 +576,12 @@ async function checkLiveStatus(username, proxy) {
   const urlUsername = username.startsWith("@") ? username : `@${username}`;
 
   try {
-    const res = await gotScraping({
+    const fetchPromise = gotScraping({
       url: `https://www.tiktok.com/${urlUsername}/live`,
       proxyUrl: proxyUrlGot,
       timeout: { request: 12000 },
       throwHttpErrors: false,
+      http2: true, // 💡 BẮT BUỘC PHẢI CÓ ĐỂ QUA MẶT TIKTOK
       retry: { limit: 0 },
       headerGeneratorOptions: {
         browsers: [{ name: "chrome", minVersion: 120 }],
@@ -589,7 +590,16 @@ async function checkLiveStatus(username, proxy) {
       },
     });
 
-    // 💡 1. BẮT BỆNH: Bị TikTok chặn (Giới hạn request)
+    // 💡 LỚP GIÁP 1: Ép timeout cứng 15s phòng trường hợp thư viện got bị treo ngầm
+    let timeoutHandle;
+    const hardTimeout = new Promise((_, r) => {
+      timeoutHandle = setTimeout(() => r(new Error("HARD_TIMEOUT")), 15000);
+    });
+
+    const res = await Promise.race([fetchPromise, hardTimeout]);
+    clearTimeout(timeoutHandle);
+
+    // 💡 LỚP GIÁP 2: Bị TikTok chặn HTTP (Giới hạn request)
     if ([403, 429].includes(res.statusCode)) {
       logWarn(
         `[TIKTOK BLOCK] HTTP ${res.statusCode} chặn kết nối - Proxy: ${getShortProxy(proxy)}`,
@@ -597,7 +607,7 @@ async function checkLiveStatus(username, proxy) {
       return "RATE_LIMIT";
     }
 
-    // 💡 2. BẮT BỆNH: Do Proxy hết hạn, lỗi mạng từ phía Proxy
+    // 💡 LỚP GIÁP 3: Do Proxy hết hạn, lỗi mạng
     if (
       [407, 502, 503, 504].includes(res.statusCode) ||
       res.statusCode >= 500
@@ -611,21 +621,32 @@ async function checkLiveStatus(username, proxy) {
     if (res.statusCode === 404) return "NOT_FOUND";
 
     const finalUrl = (res.url || "").toLowerCase();
-
-    // 💡 3. BẮT BỆNH: Bị TikTok ném vào trang bắt giải Captcha
     if (
       finalUrl.includes("login") ||
       finalUrl.includes("verify") ||
       finalUrl.includes("captcha")
     ) {
       logWarn(
-        `[TIKTOK CAPTCHA] Bị ép giải Captcha - Proxy: ${getShortProxy(proxy)}`,
+        `[TIKTOK CAPTCHA] Bị ép giải Captcha URL - Proxy: ${getShortProxy(proxy)}`,
       );
       return "CAPTCHA";
     }
 
     const html =
       typeof res.body === "string" ? res.body : JSON.stringify(res.body || "");
+
+    // 💡 LỚP GIÁP 4: Bị Cloudflare chặn ngầm (Bắt được lỗi 200 OK ảo)
+    if (
+      html.includes("Just a moment...") ||
+      html.includes("Challenge Validation") ||
+      html.includes("cf-browser-verification")
+    ) {
+      logWarn(
+        `[CLOUDFLARE WAF] Bị chặn ngầm (Bot Detect) - Proxy: ${getShortProxy(proxy)}`,
+      );
+      return "RATE_LIMIT";
+    }
+
     if (
       html.includes('"statusCode":10000') ||
       html.includes("webapp.not-found")
@@ -639,12 +660,23 @@ async function checkLiveStatus(username, proxy) {
 
     return "OFFLINE";
   } catch (error) {
-    // 💡 4. BẮT BỆNH: Mất mạng, Timeout, Proxy đứt kết nối ngầm
+    // 💡 LỚP GIÁP 5: Bắt lỗi treo máy hoặc hết tiền
+    if (error.message === "HARD_TIMEOUT") {
+      logWarn(
+        `[HARD TIMEOUT] Treo kết nối quá 15s - Proxy: ${getShortProxy(proxy)}`,
+      );
+      return "NETWORK_ERR";
+    }
+
     logWarn(
-      `[NETWORK/TIMEOUT] Đứt kết nối ngầm - Proxy: ${getShortProxy(proxy)} | Lỗi: ${error.message}`,
+      `[NETWORK/TIMEOUT] Lỗi ngầm - Proxy: ${getShortProxy(proxy)} | Lỗi: ${error.message}`,
     );
-    // 💡 BỔ SUNG: Bắt lỗi chí mạng từ nhà mạng (Hết tiền 402 hoặc Sai Pass 407)
-    if (error.message.includes("402") || error.message.includes("407")) {
+
+    if (
+      error.message.includes("402") ||
+      error.message.includes("407") ||
+      error.message.includes("Payment")
+    ) {
       return "FATAL_PROXY_BILLING";
     }
     return "NETWORK_ERR";
