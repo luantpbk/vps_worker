@@ -8,6 +8,7 @@ const HttpsProxyAgent = require("https-proxy-agent");
 const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
+const { log } = require("console");
 
 const CONFIG_FILE = "vps_config.json";
 const EULER_RATE = 4; // 1 key cho mỗi 4 proxy để tối ưu hóa hiệu suất
@@ -719,10 +720,8 @@ async function executeTask(channel) {
   try {
     const status = await checkLiveStatus(channel.username, checkProxy);
     // Chỉ in log Info nếu kết quả là LIVE/OFFLINE/NOT_FOUND để tránh rác console
-    if (["LIVE", "OFFLINE", "NOT_FOUND"].includes(status)) {
-      logInfo(
-        `Checked ${channel.username} via [${getShortProxy(checkProxy)}]: ${status}`,
-      );
+    if (status === "LIVE") {
+      logInfo(`${channel.username} LIVE. Thực hiện cắm Socket`);
     }
 
     if (status === "NOT_FOUND" || status === "OFFLINE") {
@@ -866,7 +865,9 @@ function startWebcast(channel, proxy) {
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
       proxyStrikeCount[proxy] = 0;
-
+      logSuccess(
+        `✅ [${channel.username}] Đã kết nối WebSocket (${getShortProxy(proxy)})`,
+      );
       conn.on("warn", (err) => checkAndReportDeadKey(err, key));
       conn.on("error", (err) => checkAndReportDeadKey(err, key));
 
@@ -909,7 +910,9 @@ function startWebcast(channel, proxy) {
       clearTimeout(timeoutHandle);
       checkAndReportDeadKey(err, key);
       let errMsg = String(err?.message || err).toLowerCase();
-
+      logError(
+        `❌ [${channel.username}] Kết nối WebSocket thất bại - Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
+      );
       if (
         errMsg.includes("not found") ||
         errMsg.includes("offline") ||
