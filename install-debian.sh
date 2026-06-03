@@ -9,10 +9,11 @@ echo "=============================="
 WORKER_NAME="$1"
 ENV_CONTENT="$2"
 PROXY_COUNT="$3"
+LOCAL_LOAD="$4"
 
-# Kiểm tra đảm bảo truyền đủ 3 tham số
-if [ -z "$WORKER_NAME" ] || [ -z "$ENV_CONTENT" ] || [ -z "$PROXY_COUNT" ]; then
-    echo "Usage: bash install.sh <worker_name> <env_content> <proxy_count>"
+# Kiểm tra đảm bảo truyền đủ 4 tham số
+if [ -z "$WORKER_NAME" ] || [ -z "$ENV_CONTENT" ] || [ -z "$PROXY_COUNT" ] || [ -z "$LOCAL_LOAD" ]; then
+    echo "Usage: bash install.sh <worker_name> <env_content> <proxy_count> <local_load>"
     exit 1
 fi
 
@@ -132,6 +133,9 @@ sed -i "s/\"workerName\": *\".*\"/\"workerName\": \"$WORKER_NAME\"/g" vps_config
 
 # Cập nhật số lượng Proxy
 sed -i "s/\"proxyCount\": *[0-9]*/\"proxyCount\": $PROXY_COUNT/g" vps_config.json || true
+
+# Cập nhật số lượng Local Load
+sed -i "s/\"localLoad\": *[0-9]*/\"localLoad\": $LOCAL_LOAD/g" vps_config.json || true
 
 echo "SOCKET_SECRET=\"$ENV_CONTENT\"" > .env
 
