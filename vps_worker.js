@@ -554,9 +554,8 @@ async function checkLiveStatus(username, proxy) {
     const res = await gotScraping({
       url: `https://www.tiktok.com/${urlUsername}/live`,
       proxyUrl: proxyUrlGot,
-      timeout: { request: 8000 },
+      timeout: { request: 12000 },
       throwHttpErrors: false,
-      // http2: true,
       retry: { limit: 0 },
       headerGeneratorOptions: {
         browsers: [{ name: "chrome", minVersion: 120 }],
@@ -565,18 +564,40 @@ async function checkLiveStatus(username, proxy) {
       },
     });
 
-    if ([407, 502, 503].includes(res.statusCode)) throw new Error("REQUEUE");
+    // 💡 1. BẮT BỆNH: Bị TikTok chặn (Giới hạn request)
+    if ([403, 429].includes(res.statusCode)) {
+      logWarn(
+        `[TIKTOK BLOCK] HTTP ${res.statusCode} chặn kết nối - Proxy: ${getShortProxy(proxy)}`,
+      );
+      return "RATE_LIMIT";
+    }
+
+    // 💡 2. BẮT BỆNH: Do Proxy hết hạn, lỗi mạng từ phía Proxy
+    if (
+      [407, 502, 503, 504].includes(res.statusCode) ||
+      res.statusCode >= 500
+    ) {
+      logWarn(
+        `[PROXY ERROR] HTTP ${res.statusCode} Proxy chết yếu - Proxy: ${getShortProxy(proxy)}`,
+      );
+      return "PROXY_ERR";
+    }
+
     if (res.statusCode === 404) return "NOT_FOUND";
-    if ([403, 429].includes(res.statusCode) || res.statusCode >= 500)
-      return "ERROR";
 
     const finalUrl = (res.url || "").toLowerCase();
+
+    // 💡 3. BẮT BỆNH: Bị TikTok ném vào trang bắt giải Captcha
     if (
       finalUrl.includes("login") ||
       finalUrl.includes("verify") ||
       finalUrl.includes("captcha")
-    )
-      return "BLIND_TEST";
+    ) {
+      logWarn(
+        `[TIKTOK CAPTCHA] Bị ép giải Captcha - Proxy: ${getShortProxy(proxy)}`,
+      );
+      return "CAPTCHA";
+    }
 
     const html =
       typeof res.body === "string" ? res.body : JSON.stringify(res.body || "");
@@ -593,8 +614,11 @@ async function checkLiveStatus(username, proxy) {
 
     return "OFFLINE";
   } catch (error) {
-    if (error.message === "REQUEUE") throw error;
-    throw new Error("PROXY_DEAD");
+    // 💡 4. BẮT BỆNH: Mất mạng, Timeout, Proxy đứt kết nối ngầm
+    logWarn(
+      `[NETWORK/TIMEOUT] Đứt kết nối ngầm - Proxy: ${getShortProxy(proxy)} | Lỗi: ${error.message}`,
+    );
+    return "NETWORK_ERR";
   }
 }
 
@@ -633,9 +657,12 @@ async function executeTask(channel) {
 
   try {
     const status = await checkLiveStatus(channel.username, checkProxy);
-    logInfo(
-      `Checked ${channel.username} via [${getShortProxy(checkProxy)}]: ${status}`,
-    );
+    // Chỉ in log Info nếu kết quả là LIVE/OFFLINE/NOT_FOUND để tránh rác console
+    if (["LIVE", "OFFLINE", "NOT_FOUND"].includes(status)) {
+      logInfo(
+        `Checked ${channel.username} via [${getShortProxy(checkProxy)}]: ${status}`,
+      );
+    }
 
     if (status === "NOT_FOUND" || status === "OFFLINE") {
       safeEmitRadarResult({ channel, status: status, proxy: checkProxy });
