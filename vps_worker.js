@@ -159,17 +159,26 @@ setInterval(() => {
 
 // XỬ LÝ XẢ TẢI MỀM (NUÔI ZOMBIE)
 function retireProxy(proxyStr) {
+  // 💡 FIX: Tránh việc 1 proxy bị đem ra chém nhiều lần do Master báo về trùng lặp
+  const isManaged =
+    dynamicProxies.includes(proxyStr) || zombieProxies[proxyStr];
+  if (!isManaged) return; // Nếu đã dọn dẹp sạch sẽ từ trước rồi thì bỏ qua luôn
+
   dynamicProxies = dynamicProxies.filter((p) => p !== proxyStr);
+
   if ((proxyUsage[proxyStr] || 0) > 0) {
-    logWarn(
-      `🧟 Proxy [${getShortProxy(proxyStr)}] bị phế truất nhưng đang gánh ${proxyUsage[proxyStr]} tải. Chuyển sang trạng thái ZOMBIE.`,
-    );
-    zombieProxies[proxyStr] = true;
+    if (!zombieProxies[proxyStr]) {
+      logWarn(
+        `🧟 Proxy [${getShortProxy(proxyStr)}] bị phế truất nhưng đang gánh ${proxyUsage[proxyStr]} tải. Chuyển sang ZOMBIE.`,
+      );
+      zombieProxies[proxyStr] = true;
+    }
   } else {
     logWarn(
       `🗑️ Proxy [${getShortProxy(proxyStr)}] bị phế truất (Tải = 0). Dọn dẹp RAM ngay!`,
     );
     cleanupProxyData(proxyStr);
+    delete zombieProxies[proxyStr];
   }
 }
 
@@ -236,7 +245,9 @@ async function checkProxyHealth() {
         currentHealth[p] = { status: "MẤT KẾT NỐI" };
         if (p !== "local") {
           proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
-          if (proxyFailCount[p] >= 3) {
+
+          // 💡 Đổi từ >= 3 thành === 3
+          if (proxyFailCount[p] === 3) {
             currentHealth[p].status = "BÁO LỖI";
             if (masterSocket?.connected) {
               masterSocket.emit("worker_report_dead_proxy", {
@@ -244,9 +255,10 @@ async function checkProxyHealth() {
                 workerName: config.workerName,
               });
             }
-            // 💡 FIX 2: Không chém ngay lập tức, dùng Retire để tránh đứt gãy luồng Live nếu Socket vẫn còn sống
             retireProxy(p);
-          } else proxyCooldown[p] = Date.now() + 20000;
+          } else if (proxyFailCount[p] < 3) {
+            proxyCooldown[p] = Date.now() + 20000;
+          }
         }
       }
     }),
@@ -627,16 +639,30 @@ async function executeTask(channel) {
 
     if (status === "BLIND_TEST" || status === "BLOCKED" || status === "ERROR") {
       if (checkProxy !== "local") {
+        // 💡 Nếu proxy đã bị luồng khác báo tử và xóa rồi thì thôi, không đánh gậy nữa
+        if (
+          !dynamicProxies.includes(checkProxy) &&
+          !zombieProxies[checkProxy]
+        ) {
+          safeEmitRadarResult({ channel, status: "REQUEUE" });
+          return;
+        }
+
         proxyStrikeCount[checkProxy] = (proxyStrikeCount[checkProxy] || 0) + 1;
-        if (proxyStrikeCount[checkProxy] >= 4) {
+
+        // 💡 Đổi từ >= 4 thành === 4 để đảm bảo chỉ gửi báo tử 1 LẦN DUY NHẤT
+        if (proxyStrikeCount[checkProxy] === 4) {
           if (masterSocket?.connected)
             masterSocket.emit("worker_report_dead_proxy", {
               proxy: checkProxy,
             });
-          return;
+          retireProxy(checkProxy); // Xả mềm luôn tại chỗ
+        } else if (proxyStrikeCount[checkProxy] < 4) {
+          proxyCooldown[checkProxy] = Date.now() + 60000;
         }
+      } else {
+        proxyCooldown["local"] = Date.now() + 45000;
       }
-      proxyCooldown[checkProxy] = Date.now() + 60000;
       safeEmitRadarResult({ channel, status: "REQUEUE" });
       return;
     }
