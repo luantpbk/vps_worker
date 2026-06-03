@@ -876,15 +876,14 @@ function startWebcast(channel, proxy) {
 
     // 💡 BỔ SUNG: Các từ khóa nhận diện Key hết hạn/hết limit của EulerStream
     const isDeadKey =
-      msg.includes("balance") ||
-      msg.includes("quota") ||
-      msg.includes("invalid api key") ||
-      msg.includes("unauthorized") ||
-      msg.includes("sign error") ||
-      msg.includes("401") ||
-      msg.includes("rate limit") ||
-      msg.includes("upgrade") ||
-      msg.includes("too many connections");
+      msg.includes("insufficient balance") || // Hết tiền
+      msg.includes("invalid api key") || // Sai key
+      msg.includes("rate limit for your plan") || // Hết quota gói (Đặc trưng Euler)
+      msg.includes("rate_limit_account_day") || // Hết quota ngày (Đặc trưng Euler)
+      msg.includes("rate_limit_concurrency") || // Full slot (Đặc trưng Euler)
+      msg.includes("too many connections") || // Full slot
+      msg.includes("upgrade at https") || // Đòi nâng cấp
+      msg.includes("unexpected server response: 200"); // Lỗi máy chủ Euler 200 OK
 
     if (isDeadKey) {
       logWarn(
