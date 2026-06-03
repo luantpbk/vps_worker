@@ -221,9 +221,8 @@ async function checkProxyHealth() {
     checkList.map(async (p) => {
       try {
         if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) {
-          currentHealth[p] = {
-            status: `ĐANG NGHỈ ${proxyFailCount[p] || 1} LẦN`,
-          };
+          let remain = Math.ceil((proxyCooldown[p] - Date.now()) / 1000);
+          currentHealth[p] = { status: `ĐANG NGHỈ (${remain}s)` };
           return;
         }
         let options = { timeout: 8000, validateStatus: () => true };
@@ -245,20 +244,20 @@ async function checkProxyHealth() {
         currentHealth[p] = { status: "MẤT KẾT NỐI" };
         if (p !== "local") {
           proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
-
-          // 💡 Đổi từ >= 3 thành === 3
           if (proxyFailCount[p] === 3) {
             currentHealth[p].status = "BÁO LỖI";
-            if (masterSocket?.connected) {
+            if (masterSocket?.connected)
               masterSocket.emit("worker_report_dead_proxy", {
                 proxy: p,
                 workerName: config.workerName,
               });
-            }
             retireProxy(p);
           } else if (proxyFailCount[p] < 3) {
             proxyCooldown[p] = Date.now() + 20000;
           }
+        } else {
+          // Phạt local nghỉ 20s nếu VPS mất kết nối Google
+          proxyCooldown["local"] = Date.now() + 20000;
         }
       }
     }),
@@ -557,7 +556,7 @@ async function checkLiveStatus(username, proxy) {
       proxyUrl: proxyUrlGot,
       timeout: { request: 8000 },
       throwHttpErrors: false,
-      http2: true,
+      // http2: true,
       retry: { limit: 0 },
       headerGeneratorOptions: {
         browsers: [{ name: "chrome", minVersion: 120 }],
@@ -608,12 +607,18 @@ async function executeTask(channel) {
     return;
   }
 
-  let availableProxies = config.useLocalNetwork ? ["local"] : [];
+  // 💡 CHẶN ĐỨNG LỖI SPAM LOCAL
+  let availableProxies = [];
+  if (config.useLocalNetwork) {
+    if (!proxyCooldown["local"] || Date.now() > proxyCooldown["local"]) {
+      availableProxies.push("local");
+    }
+  }
   for (let p of dynamicProxies) {
     if (
       proxyHealth[p]?.status === "SẴN SÀNG" &&
       (!proxyCooldown[p] || Date.now() > proxyCooldown[p]) &&
-      (proxyStrikeCount[p] || 0) < 4 // 💡 FIX 6: Tránh dùng Proxy sắp bị phế
+      (proxyStrikeCount[p] || 0) < 4
     )
       availableProxies.push(p);
   }
@@ -688,6 +693,8 @@ async function executeTask(channel) {
     }
   } catch (e) {
     if (checkProxy !== "local") proxyCooldown[checkProxy] = Date.now() + 30000;
+    else proxyCooldown["local"] = Date.now() + 30000;
+
     setTimeout(() => {
       safeEmitRadarResult({ channel, status: "REQUEUE" });
     }, 3000);
