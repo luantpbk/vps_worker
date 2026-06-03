@@ -627,6 +627,10 @@ async function checkLiveStatus(username, proxy) {
     logWarn(
       `[NETWORK/TIMEOUT] Đứt kết nối ngầm - Proxy: ${getShortProxy(proxy)} | Lỗi: ${error.message}`,
     );
+    // 💡 BỔ SUNG: Bắt lỗi chí mạng từ nhà mạng (Hết tiền 402 hoặc Sai Pass 407)
+    if (error.message.includes("402") || error.message.includes("407")) {
+      return "FATAL_PROXY_BILLING";
+    }
     return "NETWORK_ERR";
   }
 }
@@ -678,9 +682,15 @@ async function executeTask(channel) {
       return;
     }
 
-    if (status === "BLIND_TEST" || status === "BLOCKED" || status === "ERROR") {
+    // 💡 Đã thêm FATAL_PROXY_BILLING vào danh sách xử lý
+    if (
+      status === "CAPTCHA" ||
+      status === "RATE_LIMIT" ||
+      status === "PROXY_ERR" ||
+      status === "NETWORK_ERR" ||
+      status === "FATAL_PROXY_BILLING"
+    ) {
       if (checkProxy !== "local") {
-        // 💡 Nếu proxy đã bị luồng khác báo tử và xóa rồi thì thôi, không đánh gậy nữa
         if (
           !dynamicProxies.includes(checkProxy) &&
           !zombieProxies[checkProxy]
@@ -689,15 +699,20 @@ async function executeTask(channel) {
           return;
         }
 
-        proxyStrikeCount[checkProxy] = (proxyStrikeCount[checkProxy] || 0) + 1;
+        // 💡 BỔ SUNG: Nếu hết tiền hoặc sai pass -> Đánh thẳng 4 gậy để phế truất tức khắc
+        if (status === "FATAL_PROXY_BILLING") {
+          proxyStrikeCount[checkProxy] = 4;
+        } else {
+          proxyStrikeCount[checkProxy] =
+            (proxyStrikeCount[checkProxy] || 0) + 1;
+        }
 
-        // 💡 Đổi từ >= 4 thành === 4 để đảm bảo chỉ gửi báo tử 1 LẦN DUY NHẤT
         if (proxyStrikeCount[checkProxy] === 4) {
           if (masterSocket?.connected)
             masterSocket.emit("worker_report_dead_proxy", {
               proxy: checkProxy,
             });
-          retireProxy(checkProxy); // Xả mềm luôn tại chỗ
+          retireProxy(checkProxy);
         } else if (proxyStrikeCount[checkProxy] < 4) {
           proxyCooldown[checkProxy] = Date.now() + 60000;
         }
