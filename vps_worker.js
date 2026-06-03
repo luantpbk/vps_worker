@@ -507,7 +507,7 @@ function connectToMaster() {
 
     // 1. Xóa sạch hàng đợi chưa kịp check
     localTaskQueue = [];
-
+    eulerConnectionQueue = [];
     // 2. Ép ngắt kết nối (Rút ống thở) TOÀN BỘ các kênh đang LIVE
     const runningUsers = Object.keys(activeConnections);
     runningUsers.forEach((user) => {
@@ -549,6 +549,7 @@ function connectToMaster() {
     else {
       disconnectTimer = setTimeout(() => {
         localTaskQueue = [];
+        eulerConnectionQueue = [];
         for (let username in activeConnections) stopWebcast(username);
         activeConnections = {};
         assignedProxies = {};
@@ -720,6 +721,35 @@ async function checkLiveStatus(username, proxy) {
   }
 }
 
+// ========================================================
+// 💡 HÀNG ĐỢI CHỐNG SPAM EULER (RATE LIMIT TỪNG GIÂY)
+// ========================================================
+let eulerConnectionQueue = [];
+let isConnectingEuler = false;
+
+setInterval(async () => {
+  if (
+    isConnectingEuler ||
+    eulerConnectionQueue.length === 0 ||
+    Date.now() < workerPausedUntil
+  )
+    return;
+  isConnectingEuler = true;
+  try {
+    const { channel, proxy } = eulerConnectionQueue.shift();
+
+    // Nếu kênh chưa bị hủy hoặc chưa được cắm thì mới tiến hành
+    if (!activeConnections[channel.username]) {
+      startWebcast(channel, proxy);
+
+      // 💡 GIÃN CÁCH KẾT NỐI: Bắt buộc nghỉ 1.5s - 2.0s trước khi cắm kênh tiếp theo
+      await new Promise((r) => setTimeout(r, 1500 + Math.random() * 500));
+    }
+  } finally {
+    isConnectingEuler = false;
+  }
+}, 300);
+
 async function executeTask(channel) {
   if (
     activeConnections[channel.username] ||
@@ -821,9 +851,9 @@ async function executeTask(channel) {
       proxyUsage[socketProxy] = (proxyUsage[socketProxy] || 0) + 1;
       assignedProxies[channel.username] = socketProxy;
 
-      setTimeout(() => {
-        startWebcast(channel, socketProxy);
-      }, Math.random() * 3000);
+      // 💡 ĐÓNG KHÓA NGAY LẬP TỨC ĐỂ TRÁNH BỊ CHECK LẠI, VÀ ĐẨY VÀO HÀNG ĐỢI
+      connectionLocks.add(channel.username);
+      eulerConnectionQueue.push({ channel, proxy: socketProxy });
     }
   } catch (e) {
     if (checkProxy !== "local") proxyCooldown[checkProxy] = Date.now() + 30000;
@@ -838,12 +868,7 @@ async function executeTask(channel) {
 }
 
 function startWebcast(channel, proxy) {
-  // 💡 BỌC THÉP: Chặn 2 luồng chui vào cùng 1 username
-  if (
-    activeConnections[channel.username] ||
-    connectionLocks.has(channel.username)
-  )
-    return;
+  if (activeConnections[channel.username]) return;
   connectionLocks.add(channel.username);
 
   const key = getNextEulerKey();
