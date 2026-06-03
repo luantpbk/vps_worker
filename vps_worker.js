@@ -886,9 +886,7 @@ function startWebcast(channel, proxy) {
       msg.includes("unexpected server response: 200"); // Lỗi máy chủ Euler 200 OK
 
     if (isDeadKey) {
-      logWarn(
-        `🔑 [DEAD KEY] Phát hiện Key Euler [${targetKey.substring(0, 10)}...] đã kiệt sức. Yêu cầu đổi mới!`,
-      );
+      logError(`🔑 PHÁT HIỆN KEY CHẾT: ${errText}`);
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
