@@ -95,12 +95,8 @@ let proxyHealth = {};
 let pendingChecks = new Map();
 let connectionLocks = new Set(); // 💡 FIX 4: Đã khai báo biến chống Ghost Load
 let masterSocket = null;
-let globalFailureCount = 0;
 let workerPausedUntil = 0;
-
-setInterval(() => {
-  globalFailureCount = 0;
-}, 120000);
+let hasIPv6Support = false;
 
 let dynamicProxies = [];
 let zombieProxies = {};
@@ -332,13 +328,48 @@ function getNextEulerKey() {
 
 function formatProxyUrl(rawProxy) {
   if (!rawProxy || typeof rawProxy !== "string") return null;
-  if (rawProxy.startsWith("http")) return rawProxy;
-  const parts = rawProxy.split(":");
-  if (parts.length === 4)
-    return `http://${parts[2]}:${parts[3]}@${parts[0]}:${parts[1]}`;
-  return `http://${parts[0]}:${parts[1]}`;
-}
+  rawProxy = rawProxy.trim();
 
+  // 💡 Lớp 1: Nếu đã nhập đúng chuẩn URL từ Master thì trả về dùng luôn (Dùng được cho cả IPv6 đã bọc ngoặc vuông)
+  if (
+    rawProxy.startsWith("http://") ||
+    rawProxy.startsWith("https://") ||
+    rawProxy.startsWith("socks")
+  ) {
+    return rawProxy;
+  }
+
+  // 💡 Lớp 2: Nếu chuỗi đã chứa @ (Ví dụ: user:pass@1.2.3.4:8000)
+  if (rawProxy.includes("@")) {
+    return `http://${rawProxy}`;
+  }
+
+  // Tách chuỗi để xử lý định dạng dán thô
+  const parts = rawProxy.split(":");
+
+  // 💡 Lớp 3: Xử lý IPv4 hoặc Hostname Domain (VD: 1.1.1.1:8000:user:pass hoặc gate.proxy.com:8000:user:pass)
+  if (parts.length === 4 && !rawProxy.includes("[")) {
+    return `http://${parts[2]}:${parts[3]}@${parts[0]}:${parts[1]}`;
+  } else if (parts.length === 2 && !rawProxy.includes("[")) {
+    return `http://${parts[0]}:${parts[1]}`;
+  }
+
+  // 💡 Lớp 4: Xử lý IPv6 Thuần (Rất nhiều dấu hai chấm)
+  // Dạng dán thô: 2001:db8::1:8000:user:pass
+  if (parts.length >= 6) {
+    const pass = parts.pop(); // Lấy Pass ra khỏi đuôi
+    const user = parts.pop(); // Lấy User ra khỏi đuôi
+    const port = parts.pop(); // Lấy Port ra khỏi đuôi
+    const ipv6Raw = parts.join(":"); // Phần còn lại chính là IPv6
+
+    // Bắt buộc phải bọc IPv6 trong ngoặc vuông [ ] theo chuẩn mạng quốc tế
+    const safeIpv6 = ipv6Raw.startsWith("[") ? ipv6Raw : `[${ipv6Raw}]`;
+    return `http://${user}:${pass}@${safeIpv6}:${port}`;
+  }
+
+  // Fallback an toàn
+  return `http://${rawProxy}`;
+}
 function getCachedAgent(proxyStr) {
   if (!proxyStr || proxyStr === "local") return undefined;
   const proxyUrl = formatProxyUrl(proxyStr);
@@ -405,6 +436,7 @@ function connectToMaster() {
       pendingChannels: Array.from(pendingChecks.keys()),
       heldProxies: dynamicProxies,
       heldKeys: exclusiveEulerKeys,
+      supportIPv6: hasIPv6Support,
     });
 
     const neededProxies = Math.max(
@@ -415,6 +447,7 @@ function connectToMaster() {
       masterSocket.emit("worker_request_proxies", {
         count: neededProxies,
         workerName: config.workerName,
+        supportIPv6: hasIPv6Support,
       });
 
     const neededKeys = Math.max(
@@ -945,6 +978,7 @@ function startWebcast(channel, proxy) {
 
     return false;
   };
+  let roomId = null;
   // 💡 LẮNG NGHE SỰ KIỆN TRƯỚC KHI CONNECT ĐỂ BẮT RƯƠNG TREO NGAY LẬP TỨC
   const catchTreasureBox = (data) => {
     if (activeConnections[channel.username]) {
@@ -966,7 +1000,7 @@ function startWebcast(channel, proxy) {
         liveRegion: channel.country || "unknown", // Dùng quốc gia ở DB phòng khi chưa load xong roomInfo
         unpackAt: boxData?.unpackAt || boxData?.openTime,
         viewers: currentViewers,
-        roomId: data?.roomId || data?.roomInfo?.room_id || "",
+        roomId: roomId,
         workerTime: Date.now(),
         isHanging: isProcessingInitial, // 💡 Bắn cờ Rương Treo lên Master
       });
@@ -1001,6 +1035,7 @@ function startWebcast(channel, proxy) {
 
   Promise.race([conn.connect(), timeoutPromise])
     .then((state) => {
+      roomId = state?.roomInfo?.roomId || null; // Lưu roomId để gửi lên Master cùng dữ liệu rương treo
       clearTimeout(timeoutHandle);
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
@@ -1161,7 +1196,27 @@ setInterval(() => {
   }
 }, 20000);
 
-connectToMaster();
+// 💡 KIỂM TRA MẠNG IPV6 TRƯỚC KHI BÁO CÁO MASTER
+async function checkIPv6Capability() {
+  try {
+    logInfo("⏳ Đang kiểm tra kết nối IPv6 của VPS...");
+    // api6.ipify.org chỉ phản hồi nếu VPS thực sự gọi ra Internet bằng IPv6
+    const res = await axios.get("https://api6.ipify.org", { timeout: 4000 });
+    if (res.data) {
+      hasIPv6Support = true;
+      logSuccess(
+        `🌐 VPS CÓ HỖ TRỢ IPV6 (IP: ${res.data}). Sẵn sàng gánh Proxy IPv6!`,
+      );
+    }
+  } catch (e) {
+    hasIPv6Support = false;
+    logWarn(`🌐 VPS KHÔNG CÓ IPV6. Sẽ yêu cầu Master chỉ cấp Proxy IPv4.`);
+  }
+}
+
+checkIPv6Capability().then(() => {
+  connectToMaster();
+});
 
 function handleShutdown(signal) {
   logWarn(`⚠️ Nhận lệnh ${signal}. Đang trả tài nguyên...`);
