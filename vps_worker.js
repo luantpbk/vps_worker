@@ -979,32 +979,45 @@ function startWebcast(channel, proxy) {
     return false;
   };
   let roomId = null;
+  let pendingBoxes = [];
+
+  const emitChest = (data) => {
+    const boxData = data?.envelopeInfo || data?.treasureBoxData || data;
+
+    const coins = boxData?.diamondCount || boxData?.coin || boxData?.coins || 0;
+
+    const boxes =
+      boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
+
+    if (coins <= 0) return;
+
+    masterSocket.emit("worker_chest_raw", {
+      channel,
+      coins,
+      boxes,
+      idc: boxData?.envelopeIdc || boxData?.id || boxData?.treasureId || "",
+      workerName: config.workerName,
+      liveRegion: channel.country || "unknown",
+      unpackAt: boxData?.unpackAt || boxData?.openTime,
+      viewers: currentViewers,
+      roomId,
+      workerTime: Date.now(),
+      isHanging: isProcessingInitial,
+    });
+  };
   // 💡 LẮNG NGHE SỰ KIỆN TRƯỚC KHI CONNECT ĐỂ BẮT RƯƠNG TREO NGAY LẬP TỨC
   const catchTreasureBox = (data) => {
     if (activeConnections[channel.username]) {
       activeConnections[channel.username].lastActive = Date.now();
     }
 
-    const boxData = data?.envelopeInfo || data?.treasureBoxData || data;
-    const coins = boxData?.diamondCount || boxData?.coin || boxData?.coins || 0;
-    const boxes =
-      boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
-
-    if (coins > 0) {
-      masterSocket.emit("worker_chest_raw", {
-        channel,
-        coins: coins,
-        boxes: boxes,
-        idc: boxData?.envelopeIdc || boxData?.id || boxData?.treasureId || "",
-        workerName: config.workerName,
-        liveRegion: channel.country || "unknown", // Dùng quốc gia ở DB phòng khi chưa load xong roomInfo
-        unpackAt: boxData?.unpackAt || boxData?.openTime,
-        viewers: currentViewers,
-        roomId: roomId,
-        workerTime: Date.now(),
-        isHanging: isProcessingInitial, // 💡 Bắn cờ Rương Treo lên Master
-      });
+    // Chưa có roomId -> giữ lại
+    if (!roomId) {
+      pendingBoxes.push(data);
+      return;
     }
+
+    emitChest(data);
   };
 
   conn.on("envelope", catchTreasureBox);
@@ -1035,7 +1048,19 @@ function startWebcast(channel, proxy) {
 
   Promise.race([conn.connect(), timeoutPromise])
     .then((state) => {
-      roomId = state?.roomInfo?.roomId || null; // Lưu roomId để gửi lên Master cùng dữ liệu rương treo
+      roomId =
+        state?.roomInfo?.roomId ||
+        state?.roomInfo?.room_id ||
+        state?.roomId ||
+        null;
+
+      if (roomId && pendingBoxes.length) {
+        for (const data of pendingBoxes) {
+          emitChest(data);
+        }
+
+        pendingBoxes.length = 0;
+      }
       clearTimeout(timeoutHandle);
       activeConnections[channel.username] = conn;
       activeConnections[channel.username].lastActive = Date.now();
