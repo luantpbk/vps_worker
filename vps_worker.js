@@ -991,6 +991,16 @@ function startWebcast(channel, proxy) {
 
     if (coins <= 0) return;
 
+    // 💡 GIẢI PHÁP TRIỆT ĐỂ: Lấy thời gian gốc gói tin từ server TikTok
+    let originTimeMs = Date.now();
+    if (data?.common?.createTime) {
+      originTimeMs = Number(data.common.createTime);
+      // Đảm bảo là mili-giây (thường TikTok gửi dạng giây 10 số)
+      if (originTimeMs < 10000000000) originTimeMs *= 1000;
+    } else if (data?.timestamp) {
+      originTimeMs = Number(data.timestamp);
+    }
+
     masterSocket.emit("worker_chest_raw", {
       channel,
       coins,
@@ -1001,7 +1011,7 @@ function startWebcast(channel, proxy) {
       unpackAt: boxData?.unpackAt || boxData?.openTime,
       viewers: currentViewers,
       roomId,
-      workerTime: Date.now(),
+      workerTime: originTimeMs,
       isHanging: isProcessingInitial,
     });
   };
@@ -1028,6 +1038,16 @@ function startWebcast(channel, proxy) {
     if (activeConnections[channel.username])
       activeConnections[channel.username].lastActive = Date.now();
     if (userData?.viewerCount) currentViewers = userData.viewerCount;
+  });
+
+  // 💡 BỔ SUNG: Bắt thêm sự kiện chat/like để giữ Socket luôn tươi
+  conn.on("chat", () => {
+    if (activeConnections[channel.username])
+      activeConnections[channel.username].lastActive = Date.now();
+  });
+  conn.on("like", () => {
+    if (activeConnections[channel.username])
+      activeConnections[channel.username].lastActive = Date.now();
   });
 
   conn.on("warn", (err) => checkAndReportDeadKey(err, key));
@@ -1166,9 +1186,17 @@ setInterval(() => {
 
   for (let user in activeConnections) {
     const conn = activeConnections[user];
-    if (now - (conn.lastActive || now) > 30 * 60 * 1000) {
+
+    if (now - (conn.lastActive || now) > 5 * 60 * 1000) {
+      logWarn(
+        `✂️ Cắt bỏ Socket Zombie [${user}] do 5 phút không có tín hiệu mạng.`,
+      );
       stopWebcast(user);
-      safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
+      safeEmitRadarResult({
+        channel: { username: user },
+        status: "OFFLINE",
+        proxy: assignedProxies[user],
+      });
     }
   }
 }, 30000);
