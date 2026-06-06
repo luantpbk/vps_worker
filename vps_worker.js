@@ -432,6 +432,8 @@ function connectToMaster() {
       maxLoad: currentDynamicMaxLoad,
       localLoad: config.localLoad,
       loadPerProxy: config.loadPerProxy,
+      proxyCount: config.proxyCount,
+      useLocalNetwork: config.useLocalNetwork,
       runningChannels: Object.keys(activeConnections),
       pendingChannels: Array.from(pendingChecks.keys()),
       heldProxies: dynamicProxies,
@@ -566,14 +568,33 @@ function connectToMaster() {
   });
 
   masterSocket.on("force_update_config", (newCfg) => {
-    if (newCfg.useLocalNetwork !== undefined)
-      config.useLocalNetwork = newCfg.useLocalNetwork;
+    // 1. Đồng bộ cấu hình mạng Local
+    if (newCfg.useLocalNetwork !== undefined) {
+      config.useLocalNetwork =
+        newCfg.useLocalNetwork === true || newCfg.useLocalNetwork === "true";
+      // Tự chữa lành: Khởi tạo pool lưu tải cục bộ nếu chưa có
+      if (config.useLocalNetwork && proxyUsage["local"] === undefined) {
+        proxyUsage["local"] = 0;
+      }
+    }
+
+    // 2. Cập nhật số lượng Proxy mục tiêu
+    if (newCfg.proxyCount !== undefined) {
+      config.proxyCount = parseInt(newCfg.proxyCount);
+    }
+
     if (newCfg.localLoad) config.localLoad = parseInt(newCfg.localLoad);
     if (newCfg.loadPerProxy)
       config.loadPerProxy = parseInt(newCfg.loadPerProxy);
+
+    // Lưu lại file cấu hình vps_config.json
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 4));
+
     sendWorkerStatus();
     checkProxyHealth();
+
+    // 💡 KÍCH HOẠT NGAY: Đòi thêm hoặc xả bớt proxy/keys mà không cần chờ đợi chu kỳ 20 giây
+    balanceResources();
   });
 
   masterSocket.on("disconnect", (reason) => {
@@ -1204,7 +1225,8 @@ setInterval(() => {
 // ========================================================
 // 💡 AUTO-BALANCER: TỰ ĐỘNG BÙ/TRẢ PROXY & KEYS HOÀN HẢO
 // ========================================================
-setInterval(() => {
+// 💡 ĐÓNG GÓI HÀM CÂN BẰNG TÀI NGUYÊN ĐỂ GỌI ĐƯỢC BẤT CỨ LÚC NÀO
+function balanceResources() {
   if (masterSocket && masterSocket.connected) {
     const targetProxyCount = config.proxyCount || 0;
     const currentProxyCount = dynamicProxies.length;
@@ -1217,10 +1239,10 @@ setInterval(() => {
       masterSocket.emit("worker_request_proxies", {
         count: needed,
         workerName: config.workerName,
+        supportIPv6: hasIPv6Support,
       });
     } else if (currentProxyCount > targetProxyCount) {
       const excessCount = currentProxyCount - targetProxyCount;
-      // 💡 FIX 2: Không được cắt trực tiếp mảng bằng splice, tạo bản sao (slice) và dùng retireProxy để xả mềm
       const excessProxies = [...dynamicProxies].slice(-excessCount);
       logWarn(
         `🗑️ Thừa ${excessCount} Proxy so với cấu hình. Đang trả lại Master...`,
@@ -1231,7 +1253,6 @@ setInterval(() => {
       checkProxyHealth();
     }
 
-    // 💡 FIX 1: Dùng đúng EULER_RATE (4) để cân bằng Key
     const targetKeyCount = Math.ceil(targetProxyCount / EULER_RATE);
     const currentKeyCount = exclusiveEulerKeys.length;
 
@@ -1247,7 +1268,9 @@ setInterval(() => {
       masterSocket.emit("worker_return_keys", excessKeys);
     }
   }
-}, 20000);
+}
+// Vòng lặp định kỳ duy trì 20s
+setInterval(balanceResources, 20000);
 
 // 💡 KIỂM TRA MẠNG IPV6 TRƯỚC KHI BÁO CÁO MASTER
 async function checkIPv6Capability() {
