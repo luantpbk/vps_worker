@@ -105,6 +105,29 @@ let keyIndex = 0;
 const agentCache = {};
 let localTaskQueue = [];
 
+let proxyGeoData = {}; // Biến mới để lưu trữ quốc gia của từng proxy
+
+// 💡 TỪ ĐIỂN TỰ ĐỘNG MAP QUỐC GIA SANG NGÔN NGỮ
+function getGeoParams(countryCode) {
+  const geoMap = {
+    VN: { lang: "vi-VN", region: "VN" },
+    US: { lang: "en-US", region: "US" },
+    TH: { lang: "th-TH", region: "TH" },
+    ID: { lang: "id-ID", region: "ID" },
+    MY: { lang: "ms-MY", region: "MY" },
+    PH: { lang: "en-PH", region: "PH" },
+    SG: { lang: "en-SG", region: "SG" },
+    JP: { lang: "ja-JP", region: "JP" },
+    KR: { lang: "ko-KR", region: "KR" },
+    TW: { lang: "zh-TW", region: "TW" },
+    RU: { lang: "ru-RU", region: "RU" },
+    BR: { lang: "pt-BR", region: "BR" },
+  };
+
+  // Trả về map tương ứng, nếu quốc gia lạ thì mặc định là chuẩn Quốc Tế (US)
+  return geoMap[countryCode?.toUpperCase()] || { lang: "en-US", region: "US" };
+}
+
 if (config.useLocalNetwork) proxyUsage["local"] = 0;
 
 function getShortProxy(p) {
@@ -214,91 +237,149 @@ async function checkProxyHealth() {
   if (config.useLocalNetwork) checkList.unshift("local");
   let currentHealth = {};
 
-  await Promise.all(
-    checkList.map(async (p) => {
-      try {
+  // 💡 ƯU ĐIỂM HÀM 2: CHIA NHỎ MẢNG (CHUNKING)
+  // Mỗi nhịp chỉ xử lý 5 request để bảo vệ RAM và giới hạn Socket của VPS
+  const chunkSize = 5;
+  for (let i = 0; i < checkList.length; i += chunkSize) {
+    const chunk = checkList.slice(i, i + chunkSize);
+
+    await Promise.all(
+      chunk.map(async (p) => {
+        // 💡 ƯU ĐIỂM HÀM 1: KIỂM TRA COOLDOWN ĐẦU TIÊN
+        // Nếu proxy đang bị phạt nghỉ, bỏ qua luôn để đỡ tốn CPU và Băng thông
         if (proxyCooldown[p] && Date.now() < proxyCooldown[p]) {
           let remain = Math.ceil((proxyCooldown[p] - Date.now()) / 1000);
           currentHealth[p] = { status: `ĐANG NGHỈ (${remain}s)` };
           return;
         }
 
-        let proxyUrlGot = p === "local" ? undefined : formatProxyUrl(p);
-        const healthRes = await gotScraping({
-          url: "https://clients3.google.com/generate_204",
-          proxyUrl: proxyUrlGot,
-          timeout: { request: 10000 },
-          throwHttpErrors: false,
-          retry: { limit: 0 },
-          headers: {
-            "User-Agent": "curl/7.81.0", // Không cần giả lập Chrome nặng nề khi Ping
-          },
-        });
+        // 💡 ƯU ĐIỂM HÀM 2: MÁY CHÉM THỜI GIAN STRICT TIMEOUT
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // Cho phép tối đa 8s
 
-        if (healthRes.statusCode === 200 || healthRes.statusCode === 204) {
-          currentHealth[p] = { status: "SẴN SÀNG" };
-          proxyFailCount[p] = 0;
-        } else {
-          throw new Error(`Mã lỗi HTTP ${healthRes.statusCode}`);
-        }
-      } catch (e) {
-        currentHealth[p] = { status: "MẤT KẾT NỐI" };
+        let options = { signal: controller.signal };
+
         if (p !== "local") {
-          // 💡 Nếu Proxy này đã bị tử hình từ luồng check trước đó rồi thì bỏ qua
-          if (proxyFailCount[p] < 0) return;
-
-          proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
-
-          // 💡 FAST-KILL: Phát hiện lỗi hết tiền/hết hạn băng thông khi Ping Google
-          if (
-            e.message.includes("402") ||
-            e.message.includes("407") ||
-            e.message.includes("Payment")
-          ) {
-            proxyFailCount[p] = 3; // Ép lên thẳng 3 gậy để tử hình luôn
-          }
-
-          logWarn(
-            `[PING LỖI] Proxy [${getShortProxy(p)}] không kết nối được Google (Lần ${proxyFailCount[p]}/3). Lỗi: ${e.message}`,
-          );
-
-          // 💡 Sửa từ "=== 3" thành ">= 3" để chống nhảy cóc (Bug Bất Tử)
-          if (proxyFailCount[p] >= 3) {
-            currentHealth[p].status = "BÁO LỖI";
-            if (masterSocket?.connected)
-              masterSocket.emit("worker_report_dead_proxy", {
-                proxy: p,
-                workerName: config.workerName,
-              });
-
-            retireProxy(p); // Vứt ngay lập tức
-
-            proxyFailCount[p] = -9999; // Cờ hiệu: Đã tử hình, cấm đếm tiếp!
-          } else {
-            proxyCooldown[p] = Date.now() + 20000;
-          }
-        } else {
-          proxyCooldown["local"] = Date.now() + 20000;
+          // Xử lý Agent chuẩn xác cho cả HTTP và HTTPS
+          const proxyAgent = getCachedAgent(p);
+          options.httpAgent = proxyAgent;
+          options.httpsAgent = proxyAgent;
         }
-      }
-    }),
-  );
 
+        try {
+          // ========================================================
+          // 💡 TÍNH NĂNG MỚI: LẤY VÀ LƯU COUNTRY CODE (CHỈ CHẠY 1 LẦN)
+          // ========================================================
+          if (p !== "local" && !proxyGeoData[p]) {
+            try {
+              const geoRes = await axios.get(
+                "http://ip-api.com/json/?fields=countryCode",
+                options,
+              );
+              if (geoRes.data && geoRes.data.countryCode) {
+                proxyGeoData[p] = geoRes.data.countryCode;
+              } else {
+                proxyGeoData[p] = "VN"; // Mặc định nếu API trả về rỗng
+              }
+            } catch (geoErr) {
+              // Gán tạm thời để lần sau không gọi lại nếu API sập, tránh treo proxy
+              proxyGeoData[p] = "UNKNOWN";
+            }
+          }
+
+          // ========================================================
+          // 💡 PING KIỂM TRA SỨC KHỎE
+          // ========================================================
+          const healthRes = await axios.get(
+            "https://clients3.google.com/generate_204",
+            options,
+          );
+          clearTimeout(timeoutId); // Gỡ mìn nếu thành công
+
+          if (healthRes.status === 200 || healthRes.status === 204) {
+            currentHealth[p] = {
+              status: "SẴN SÀNG",
+              country: proxyGeoData[p] || "VN", // Đính kèm quốc gia vào status để đẩy lên Master
+            };
+            proxyFailCount[p] = 0; // Reset số lần lỗi
+          } else {
+            throw new Error(`HTTP Lỗi ${healthRes.status}`);
+          }
+        } catch (e) {
+          clearTimeout(timeoutId); // Gỡ mìn nếu lỗi
+
+          currentHealth[p] = { status: "MẤT KẾT NỐI" };
+
+          if (p !== "local") {
+            // 💡 ƯU ĐIỂM HÀM 1: BẢO VỆ CHỐNG DỌN DẸP LỖI (Bug Bất Tử)
+            if (proxyFailCount[p] < 0) return;
+
+            proxyFailCount[p] = (proxyFailCount[p] || 0) + 1;
+            const errMsg = e.message || "";
+
+            // 💡 ƯU ĐIỂM HÀM 1: FAST-KILL (TỬ HÌNH NHANH)
+            if (
+              errMsg.includes("402") ||
+              errMsg.includes("407") ||
+              errMsg.includes("Payment")
+            ) {
+              proxyFailCount[p] = 3;
+            }
+
+            logWarn(
+              `[PING LỖI] Proxy [${getShortProxy(p)}] đứt mạng (Lần ${proxyFailCount[p]}/3). Lỗi: ${errMsg}`,
+            );
+
+            // 💡 XỬ LÝ LỖI TRỌNG TÂM THEO HÀM 1
+            if (proxyFailCount[p] >= 3) {
+              currentHealth[p].status = "BÁO LỖI";
+
+              if (masterSocket?.connected) {
+                masterSocket.emit("worker_report_dead_proxy", {
+                  proxy: p,
+                  workerName: config.workerName,
+                });
+              }
+
+              retireProxy(p); // Vứt ngay lập tức một cách an toàn
+              proxyFailCount[p] = -9999; // Cờ hiệu: Đã tử hình
+            } else {
+              // Phạt nghỉ 20s chờ phục hồi
+              proxyCooldown[p] = Date.now() + 20000;
+            }
+          } else {
+            // Mạng Local đứt thì cho nghỉ 20s rồi thử lại
+            proxyCooldown["local"] = Date.now() + 20000;
+          }
+        }
+      }),
+    );
+  }
+
+  // Cập nhật lại kho máu chung
   proxyHealth = currentHealth;
+
+  // ========================================================
+  // 💡 TÍNH TOÁN LẠI TỔNG TẢI (MAX LOAD) NHƯ HÀM 1
+  // ========================================================
   let aliveCount =
     config.useLocalNetwork && proxyHealth["local"]?.status === "SẴN SÀNG"
-      ? config.localLoad
+      ? config.localLoad || 0
       : 0;
+
   for (let p of dynamicProxies) {
-    if (proxyHealth[p]?.status === "SẴN SÀNG")
-      aliveCount += config.loadPerProxy;
+    if (proxyHealth[p]?.status === "SẴN SÀNG") {
+      aliveCount += config.loadPerProxy || 0;
+    }
   }
 
   currentDynamicMaxLoad = aliveCount;
-  if (masterSocket?.connected)
+
+  if (masterSocket?.connected) {
     masterSocket.emit("worker_update_capacity", {
       maxLoad: currentDynamicMaxLoad,
     });
+  }
 }
 setInterval(checkProxyHealth, 45000);
 setTimeout(checkProxyHealth, 2000);
@@ -391,6 +472,7 @@ function cleanupProxyData(proxy) {
     } catch (e) {}
     delete agentCache[proxyUrl];
   }
+  delete proxyGeoData[proxy];
   delete proxyHealth[proxy];
   delete proxyUsage[proxy];
   delete proxyFailCount[proxy];
@@ -668,6 +750,9 @@ async function checkLiveStatus(username, proxy) {
   let retries = 1;
   while (retries >= 0) {
     try {
+      // 💡 LẤY THÔNG SỐ VÙNG MIỀN THEO PROXY (NẾU CHƯA KỊP QUÉT THÌ MẶC ĐỊNH VN)
+      const currentCountry = proxyGeoData[proxy] || "VN";
+      const geo = getGeoParams(currentCountry);
       const fetchPromise = gotScraping({
         url: `https://www.tiktok.com/${urlUsername}/live`,
         proxyUrl: proxyUrlGot,
@@ -678,7 +763,7 @@ async function checkLiveStatus(username, proxy) {
         headerGeneratorOptions: {
           browsers: [{ name: "chrome", minVersion: 120 }],
           devices: ["desktop"],
-          locales: ["vi-VN", "en-US"],
+          locales: [geo.lang, "en-US"],
         },
       });
 
@@ -932,6 +1017,9 @@ async function executeTask(channel) {
 function startWebcast(channel, proxy) {
   if (activeConnections[channel.username]) return;
   connectionLocks.add(channel.username);
+  // 💡 LẤY THÔNG SỐ VÙNG MIỀN THEO PROXY (NẾU CHƯA KỊP QUÉT THÌ MẶC ĐỊNH VN)
+  const currentCountry = proxyGeoData[proxy] || "VN";
+  const geo = getGeoParams(currentCountry);
 
   const key = getNextEulerKey();
   let conn = new TikTokLiveConnection(channel.username, {
@@ -943,9 +1031,13 @@ function startWebcast(channel, proxy) {
     enableExtendedGiftInfo: false,
     clientParams: {
       device_platform: "web",
-      browser_language: "vi-VN",
       browser_name: "Mozilla",
       browser_version: "124.0.0.0", // 💡 Chuẩn hóa version cho API
+      browser_language: `${geo.lang}-${geo.region}`, // vd: en-US
+      app_language: geo.lang,
+      webcast_language: geo.lang,
+      region: geo.region,
+      sys_region: geo.region,
     },
   });
 
