@@ -92,6 +92,7 @@ let proxyFailCount = {};
 let proxyCooldown = {};
 let proxyStrikeCount = {};
 let proxyHealth = {};
+let keyCooldown = {};
 let pendingChecks = new Map();
 let connectionLocks = new Set(); // 💡 FIX 4: Đã khai báo biến chống Ghost Load
 let masterSocket = null;
@@ -358,7 +359,6 @@ async function checkProxyHealth() {
 
   // Cập nhật lại kho máu chung
   proxyHealth = currentHealth;
-
   // ========================================================
   // 💡 TÍNH TOÁN LẠI TỔNG TẢI (MAX LOAD) NHƯ HÀM 1
   // ========================================================
@@ -401,8 +401,22 @@ function getNextAvailableProxy() {
 }
 
 function getNextEulerKey() {
-  if (exclusiveEulerKeys.length === 0) return "";
-  const key = exclusiveEulerKeys[keyIndex % exclusiveEulerKeys.length];
+  if (exclusiveEulerKeys.length === 0) return null; // Sửa từ "" thành null
+
+  const now = Date.now();
+  // 💡 Lọc ra những key KHÔNG bị phạt, hoặc đã hết thời gian phạt
+  const availableKeys = exclusiveEulerKeys.filter(
+    (k) => !keyCooldown[k] || now > keyCooldown[k],
+  );
+
+  if (availableKeys.length === 0) {
+    logWarn(
+      `⏳ Tất cả ${exclusiveEulerKeys.length} Euler Keys đều đang bị quá tải. Xin chờ...`,
+    );
+    return null;
+  }
+
+  const key = availableKeys[keyIndex % availableKeys.length];
   keyIndex++;
   return key;
 }
@@ -1022,6 +1036,12 @@ function startWebcast(channel, proxy) {
   const geo = getGeoParams(currentCountry);
 
   const key = getNextEulerKey();
+  // 💡 BỔ SUNG: Nếu không có Key nào rảnh rỗi, nhét kênh lại vào hàng đợi và return luôn
+  if (!key) {
+    safeEmitRadarResult({ channel, status: "REQUEUE" });
+    return;
+  }
+
   let conn = new TikTokLiveConnection(channel.username, {
     signApiKey: key,
     webClientOptions: { httpsAgent: getCachedAgent(proxy) },
@@ -1085,6 +1105,8 @@ function startWebcast(channel, proxy) {
       logWarn(
         `[⚠️] ⏳ KEY QUÁ TẢI [${targetKey.substring(0, 10)}...]. Đang làm việc quá sức, tha cho nó nghỉ 1 lát!`,
       );
+      // 💡 BỔ SUNG: Phạt Key này nghỉ ngơi 5 giây không được gọi API nữa
+      keyCooldown[targetKey] = Date.now() + 5000;
       // KHÔNG báo lên Master (để Master không xóa Key), chỉ trả về true để ngắt kênh hiện tại ném lại vào hàng đợi
       return true;
     }
