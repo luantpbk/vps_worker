@@ -156,7 +156,7 @@ fi
 echo "=== Restart worker ==="
 
 pm2 delete worker || true
-pm2 start vps_worker.js --name worker --node-args="--max-old-space-size=4096"
+pm2 start vps_worker.js --name worker 
 pm2 save
 pm2 startup systemd -u root --hp /root || true
 
