@@ -92,6 +92,7 @@ let proxyFailCount = {};
 let proxyCooldown = {};
 let proxyStrikeCount = {};
 let proxyHealth = {};
+let keyCooldown = {};
 let pendingChecks = new Map();
 let connectionLocks = new Set(); // 💡 FIX 4: Đã khai báo biến chống Ghost Load
 let masterSocket = null;
@@ -401,8 +402,23 @@ function getNextAvailableProxy() {
 }
 
 function getNextEulerKey() {
-  if (exclusiveEulerKeys.length === 0) return "";
-  const key = exclusiveEulerKeys[keyIndex % exclusiveEulerKeys.length];
+  if (exclusiveEulerKeys.length === 0) return null;
+
+  const now = Date.now();
+  // 💡 CHỈ LẤY CÁC KEY ĐANG KHÔNG BỊ PHẠT NGHỈ
+  const availableKeys = exclusiveEulerKeys.filter(
+    (k) => !keyCooldown[k] || now > keyCooldown[k],
+  );
+
+  if (availableKeys.length === 0) {
+    logWarn(
+      `⏳ Tất cả Euler Keys đang nghỉ 15s để chống cháy Quota. Kênh sẽ tự xếp hàng chờ...`,
+    );
+    return null;
+  }
+
+  // Lấy xoay vòng không giới hạn sức chứa
+  const key = availableKeys[keyIndex % availableKeys.length];
   keyIndex++;
   return key;
 }
@@ -1080,7 +1096,8 @@ function startWebcast(channel, proxy) {
 
     // Xử lý nếu Key chỉ đang quá tải
     if (isOverloadedKey) {
-      logWarn(`[⚠️] ⏳ KEY QUÁ TẢI ${msg}!`);
+      logWarn(`[⚠️] ⏳ KEY QUÁ TẢI ${msg}`);
+      keyCooldown[targetKey] = Date.now() + 1000;
       // KHÔNG báo lên Master (để Master không xóa Key), chỉ trả về true để ngắt kênh hiện tại ném lại vào hàng đợi
       return true;
     }
@@ -1147,16 +1164,6 @@ function startWebcast(channel, proxy) {
     if (activeConnections[channel.username])
       activeConnections[channel.username].lastActive = Date.now();
     if (userData?.viewerCount) currentViewers = userData.viewerCount;
-  });
-
-  // 💡 BỔ SUNG: Bắt thêm sự kiện chat/like để giữ Socket luôn tươi
-  conn.on("chat", () => {
-    if (activeConnections[channel.username])
-      activeConnections[channel.username].lastActive = Date.now();
-  });
-  conn.on("like", () => {
-    if (activeConnections[channel.username])
-      activeConnections[channel.username].lastActive = Date.now();
   });
 
   conn.on("warn", (err) => checkAndReportDeadKey(err, key));
