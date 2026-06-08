@@ -20,7 +20,7 @@ let config = {
   loadPerProxy: 10,
   localLoad: 50,
 };
-
+const MAX_EULER_INTERVAL = 3000;
 let currentDynamicMaxLoad = 0;
 
 function loadConfig() {
@@ -906,7 +906,9 @@ setInterval(async () => {
       startWebcast(channel, proxy);
 
       // 💡 GIÃN CÁCH KẾT NỐI: Bắt buộc nghỉ 1.5s - 2.0s trước khi cắm kênh tiếp theo
-      await new Promise((r) => setTimeout(r, 1500 + Math.random() * 500));
+      await new Promise((r) =>
+        setTimeout(r, MAX_EULER_INTERVAL + Math.random() * 2000),
+      );
     }
   } finally {
     isConnectingEuler = false;
@@ -1096,7 +1098,7 @@ function startWebcast(channel, proxy) {
     // Xử lý nếu Key chỉ đang quá tải
     if (isOverloadedKey) {
       logWarn(`[⚠️] ⏳ KEY QUÁ TẢI ${msg}`);
-      keyCooldown[targetKey] = Date.now() + 1000;
+      keyCooldown[targetKey] = Date.now() + 5000;
       // KHÔNG báo lên Master (để Master không xóa Key), chỉ trả về true để ngắt kênh hiện tại ném lại vào hàng đợi
       return true;
     }
