@@ -1323,10 +1323,10 @@ setInterval(() => {
 // ========================================================
 // 💡 AUTO-BALANCER: TỰ ĐỘNG BÙ/TRẢ PROXY & KEYS HOÀN HẢO
 // ========================================================
-// 💡 ĐÓNG GÓI HÀM CÂN BẰNG TÀI NGUYÊN ĐỂ GỌI ĐƯỢC BẤT CỨ LÚC NÀO
 function balanceResources() {
   if (masterSocket && masterSocket.connected) {
-    const targetProxyCount = config.proxyCount || 0;
+    // 💡 FIX 1: Ép kiểu cứng về Integer để chống lỗi so sánh Chuỗi (String)
+    const targetProxyCount = parseInt(config.proxyCount, 10) || 0;
     const currentProxyCount = dynamicProxies.length;
 
     if (currentProxyCount < targetProxyCount) {
@@ -1341,7 +1341,10 @@ function balanceResources() {
       });
     } else if (currentProxyCount > targetProxyCount) {
       const excessCount = currentProxyCount - targetProxyCount;
-      const excessProxies = [...dynamicProxies].slice(-excessCount);
+
+      // 💡 FIX 2: Cắt mảng an toàn để đảm bảo luôn lấy đúng số lượng dư thừa
+      const excessProxies = [...dynamicProxies].slice(-Math.abs(excessCount));
+
       logWarn(
         `🗑️ Thừa ${excessCount} Proxy so với cấu hình. Đang trả lại Master...`,
       );
@@ -1351,6 +1354,7 @@ function balanceResources() {
       checkProxyHealth();
     }
 
+    // Xử lý Cân bằng Euler Keys
     const targetKeyCount = Math.ceil(targetProxyCount / EULER_RATE);
     const currentKeyCount = exclusiveEulerKeys.length;
 
@@ -1362,7 +1366,9 @@ function balanceResources() {
       });
     } else if (currentKeyCount > targetKeyCount) {
       const countToDrop = currentKeyCount - targetKeyCount;
-      const excessKeys = exclusiveEulerKeys.splice(-countToDrop);
+
+      // 💡 FIX 3: Cắt mảng an toàn để trả Key thừa
+      const excessKeys = exclusiveEulerKeys.splice(-Math.abs(countToDrop));
       masterSocket.emit("worker_return_keys", excessKeys);
     }
   }
