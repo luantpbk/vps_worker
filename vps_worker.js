@@ -913,7 +913,7 @@ setInterval(async () => {
   } finally {
     isConnectingEuler = false;
   }
-}, 300);
+}, 500);
 
 async function executeTask(channel) {
   if (
