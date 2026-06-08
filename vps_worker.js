@@ -20,7 +20,7 @@ let config = {
   loadPerProxy: 10,
   localLoad: 50,
 };
-const MAX_EULER_INTERVAL = 3000;
+const MAX_EULER_INTERVAL = 2000;
 let currentDynamicMaxLoad = 0;
 
 function loadConfig() {
@@ -907,7 +907,7 @@ setInterval(async () => {
 
       // 💡 GIÃN CÁCH KẾT NỐI: Bắt buộc nghỉ 1.5s - 2.0s trước khi cắm kênh tiếp theo
       await new Promise((r) =>
-        setTimeout(r, MAX_EULER_INTERVAL + Math.random() * 2000),
+        setTimeout(r, MAX_EULER_INTERVAL + Math.floor(Math.random() * 3) * 500),
       );
     }
   } finally {
