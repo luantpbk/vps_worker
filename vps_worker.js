@@ -92,9 +92,6 @@ let proxyFailCount = {};
 let proxyCooldown = {};
 let proxyStrikeCount = {};
 let proxyHealth = {};
-let keyCooldown = {};
-let assignedKeys = {}; // 💡 THÊM: Lưu vết Kênh nào đang cầm Key nào
-let keyUsage = {}; // 💡 THÊM: Theo dõi số lượng tải của từng Key
 let pendingChecks = new Map();
 let connectionLocks = new Set(); // 💡 FIX 4: Đã khai báo biến chống Ghost Load
 let masterSocket = null;
@@ -361,6 +358,7 @@ async function checkProxyHealth() {
 
   // Cập nhật lại kho máu chung
   proxyHealth = currentHealth;
+
   // ========================================================
   // 💡 TÍNH TOÁN LẠI TỔNG TẢI (MAX LOAD) NHƯ HÀM 1
   // ========================================================
@@ -403,37 +401,10 @@ function getNextAvailableProxy() {
 }
 
 function getNextEulerKey() {
-  if (exclusiveEulerKeys.length === 0) return null;
-
-  const now = Date.now();
-  // Lọc ra các Key KHÔNG bị phạt
-  const availableKeys = exclusiveEulerKeys.filter(
-    (k) => !keyCooldown[k] || now > keyCooldown[k],
-  );
-
-  if (availableKeys.length === 0) {
-    logWarn(
-      `⏳ Tất cả ${exclusiveEulerKeys.length} Euler Keys đều đang bị phạt Cooldown. Xin chờ...`,
-    );
-    return null;
-  }
-
-  // 💡 GIẢI PHÁP 1: Sắp xếp ưu tiên Key có số lượng kết nối đang gánh là THẤP NHẤT
-  availableKeys.sort((a, b) => (keyUsage[a] || 0) - (keyUsage[b] || 0));
-
-  const bestKey = availableKeys[0];
-
-  // 💡 GIẢI PHÁP 2: CHẶN ĐỨNG DOMINO
-  // Nếu Key rảnh nhất mà cũng đang gánh >= 4 kết nối, thì tuyệt đối KHÔNG cho cắm thêm.
-  // Trả về null để ép kênh Live chui lại vào hàng đợi (REQUEUE), bảo vệ Key sống sót.
-  if ((keyUsage[bestKey] || 0) >= EULER_RATE + 1) {
-    logWarn(
-      `🛡️ Các Key còn sống đều đã QUÁ TẢI (Max tải/key). Tạm chặn kết nối mới để chống hiệu ứng Domino!`,
-    );
-    return null;
-  }
-
-  return bestKey;
+  if (exclusiveEulerKeys.length === 0) return "";
+  const key = exclusiveEulerKeys[keyIndex % exclusiveEulerKeys.length];
+  keyIndex++;
+  return key;
 }
 
 function formatProxyUrl(rawProxy) {
@@ -1051,13 +1022,6 @@ function startWebcast(channel, proxy) {
   const geo = getGeoParams(currentCountry);
 
   const key = getNextEulerKey();
-  // 💡 BỔ SUNG: Nếu không có Key nào rảnh rỗi, nhét kênh lại vào hàng đợi và return luôn
-  if (!key) {
-    safeEmitRadarResult({ channel, status: "REQUEUE" });
-    return;
-  }
-  assignedKeys[channel.username] = key;
-  keyUsage[key] = (keyUsage[key] || 0) + 1;
   let conn = new TikTokLiveConnection(channel.username, {
     signApiKey: key,
     webClientOptions: { httpsAgent: getCachedAgent(proxy) },
@@ -1121,8 +1085,6 @@ function startWebcast(channel, proxy) {
       logWarn(
         `[⚠️] ⏳ KEY QUÁ TẢI [${targetKey.substring(0, 10)}...]. Đang làm việc quá sức, tha cho nó nghỉ 1 lát!`,
       );
-      // 💡 BỔ SUNG: Phạt Key này nghỉ ngơi 5 giây không được gọi API nữa
-      keyCooldown[targetKey] = Date.now() + 5000;
       // KHÔNG báo lên Master (để Master không xóa Key), chỉ trả về true để ngắt kênh hiện tại ném lại vào hàng đợi
       return true;
     }
@@ -1253,7 +1215,9 @@ function startWebcast(channel, proxy) {
       // 💡 FIX QUAN TRỌNG: Nếu lỗi là do Key, TRẮNG ÁN CHO PROXY.
       // Không được để code chạy xuống dưới vì chữ "rate limit" sẽ làm Proxy bị phạt oan!
       if (isKeyDead) {
-        safeEmitRadarResult({ channel, status: "REQUEUE" });
+        setTimeout(() => {
+          safeEmitRadarResult({ channel, status: "REQUEUE" });
+        }, 2000);
         stopWebcast(channel.username);
         return;
       }
@@ -1304,12 +1268,7 @@ function stopWebcast(user) {
       delete zombieProxies[realProxy];
     }
   }
-  // 💡 BỔ SUNG: GIẢI PHÓNG KEY
-  const realKey = assignedKeys[user];
-  if (realKey) {
-    keyUsage[realKey] = Math.max(0, (keyUsage[realKey] || 0) - 1);
-    delete assignedKeys[user];
-  }
+
   pendingChecks.delete(user);
   connectionLocks.delete(user); // 💡 Rút khóa chống đúp
 
