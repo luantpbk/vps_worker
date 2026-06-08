@@ -1069,9 +1069,7 @@ function startWebcast(channel, proxy) {
 
     // Xử lý nếu Key chết hẳn
     if (isFatalKey) {
-      logWarn(
-        `[❌] 🔑 PHÁT HIỆN KEY CHẾT HẲN [${targetKey.substring(0, 10)}...]. Yêu cầu Master xóa bỏ!`,
-      );
+      logWarn(`[❌] 🔑 PHÁT HIỆN KEY CHẾT HẲN ${msg}!`);
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
@@ -1082,9 +1080,7 @@ function startWebcast(channel, proxy) {
 
     // Xử lý nếu Key chỉ đang quá tải
     if (isOverloadedKey) {
-      logWarn(
-        `[⚠️] ⏳ KEY QUÁ TẢI [${targetKey.substring(0, 10)}...]. Đang làm việc quá sức, tha cho nó nghỉ 1 lát!`,
-      );
+      logWarn(`[⚠️] ⏳ KEY QUÁ TẢI ${msg}!`);
       // KHÔNG báo lên Master (để Master không xóa Key), chỉ trả về true để ngắt kênh hiện tại ném lại vào hàng đợi
       return true;
     }
