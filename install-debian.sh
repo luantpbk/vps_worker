@@ -23,37 +23,6 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ==========================================
-# OS LIMITS TUNING (ULIMIT 65535)
-# ==========================================
-
-echo "=== Opening VPS Limits (65535) ==="
-
-# 1. Tăng file descriptors cho phiên bản người dùng (User Session)
-cat <<EOF > /etc/security/limits.d/99-worker-limits.conf
-* soft nofile 65535
-* hard nofile 65535
-root soft nofile 65535
-root hard nofile 65535
-EOF
-
-# 2. Tăng file descriptors cho cấu hình Systemd (Quan trọng cho PM2 startup)
-sed -i 's/.*DefaultLimitNOFILE.*/DefaultLimitNOFILE=65535/' /etc/systemd/system.conf || true
-sed -i 's/.*DefaultLimitNOFILE.*/DefaultLimitNOFILE=65535/' /etc/systemd/user.conf || true
-
-# 3. Mở rộng TCP Backlog & Sysctl để chịu tải hàng ngàn request Socket
-cat <<EOF > /etc/sysctl.d/99-worker-net.conf
-fs.file-max = 100000
-net.core.somaxconn = 65535
-net.ipv4.tcp_max_syn_backlog = 65535
-EOF
-sysctl -p /etc/sysctl.d/99-worker-net.conf >/dev/null 2>&1
-
-# Áp dụng thay đổi cho systemd
-systemctl daemon-reload
-
-echo "[OK] VPS limits opened to 65535"
-
-# ==========================================
 # SAFE APT FIX (CRITICAL)
 # ==========================================
 
