@@ -5,6 +5,7 @@ const { io: ClientIO } = require("socket.io-client");
 const customParser = require("socket.io-msgpack-parser");
 const { TikTokLiveConnection } = require("tiktok-live-connector");
 const HttpsProxyAgent = require("https-proxy-agent");
+const { SocksProxyAgent } = require("socks-proxy-agent"); // 💡 BỔ SUNG DÒNG NÀY
 const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
@@ -470,12 +471,21 @@ function formatProxyUrl(rawProxy) {
 function getCachedAgent(proxyStr) {
   if (!proxyStr || proxyStr === "local") return undefined;
   const proxyUrl = formatProxyUrl(proxyStr);
+
   if (!agentCache[proxyUrl]) {
-    agentCache[proxyUrl] = new HttpsProxyAgent(proxyUrl, {
-      keepAlive: true,
-      keepAliveMsecs: 60000,
-      rejectUnauthorized: false,
-    });
+    // 💡 TÍNH NĂNG MỚI: Tách luồng xử lý SOCKS5 và HTTP/HTTPS
+    if (proxyUrl.startsWith("socks")) {
+      agentCache[proxyUrl] = new SocksProxyAgent(proxyUrl, {
+        keepAlive: true,
+        timeout: 60000,
+      });
+    } else {
+      agentCache[proxyUrl] = new HttpsProxyAgent(proxyUrl, {
+        keepAlive: true,
+        keepAliveMsecs: 60000,
+        rejectUnauthorized: false,
+      });
+    }
   }
   return agentCache[proxyUrl];
 }
@@ -537,6 +547,7 @@ function connectToMaster() {
       heldProxies: dynamicProxies,
       heldKeys: exclusiveEulerKeys,
       supportIPv6: hasIPv6Support,
+      supportSocks5: true, // 💡 BỔ SUNG CỜ NÀY VÀO ĐÂY
     });
 
     const neededProxies = Math.max(
@@ -548,6 +559,7 @@ function connectToMaster() {
         count: neededProxies,
         workerName: config.workerName,
         supportIPv6: hasIPv6Support,
+        supportSocks5: true, // 💡 BỔ SUNG CỜ NÀY VÀO ĐÂY
       });
 
     const neededKeys = Math.max(
