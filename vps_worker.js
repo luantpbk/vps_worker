@@ -20,7 +20,7 @@ let config = {
   loadPerProxy: 10,
   localLoad: 50,
 };
-const MAX_EULER_INTERVAL = 2000;
+const MAX_EULER_INTERVAL = 3000;
 let currentDynamicMaxLoad = 0;
 
 function loadConfig() {
@@ -905,9 +905,9 @@ setInterval(async () => {
     if (!activeConnections[channel.username]) {
       startWebcast(channel, proxy);
 
-      // 💡 GIÃN CÁCH KẾT NỐI: Bắt buộc nghỉ 1.5s - 2.0s trước khi cắm kênh tiếp theo
+      // 💡 GIÃN CÁCH KẾT NỐI: Bắt buộc nghỉ 3-5s trước khi cắm kênh tiếp theo
       await new Promise((r) =>
-        setTimeout(r, MAX_EULER_INTERVAL + Math.floor(Math.random() * 3) * 500),
+        setTimeout(r, MAX_EULER_INTERVAL + Math.floor(Math.random() * 5) * 500),
       );
     }
   } finally {
@@ -1079,7 +1079,6 @@ function startWebcast(channel, proxy) {
     const isOverloadedKey =
       msg.includes("too many connections") ||
       msg.includes("rate_limit_concurrency") ||
-      msg.includes("unexpected server response: 200") ||
       msg.includes("rate limit for your plan") ||
       msg.includes("rate_limit_account_day") ||
       msg.includes("upgrade at https");
@@ -1235,7 +1234,8 @@ function startWebcast(channel, proxy) {
       } else if (
         errMsg.includes("rate limit") ||
         errMsg.includes("captcha") ||
-        errMsg.includes("403")
+        errMsg.includes("403") ||
+        errMsg.includes("unexpected server response: 200")
       ) {
         if (proxy !== "local") {
           proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
