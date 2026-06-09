@@ -781,9 +781,8 @@ async function checkLiveStatus(username, proxy) {
       // 💡 LẤY THÔNG SỐ VÙNG MIỀN THEO PROXY (NẾU CHƯA KỊP QUÉT THÌ MẶC ĐỊNH VN)
       const currentCountry = proxyGeoData[proxy] || "VN";
       const geo = getGeoParams(currentCountry);
-      const fetchPromise = gotScraping({
+      const gotOptions = gotScraping({
         url: `https://www.tiktok.com/${urlUsername}/live`,
-        proxyUrl: proxyUrlGot,
         timeout: { request: 12000 },
         throwHttpErrors: false,
         http2: true, // 💡 BẮT BUỘC PHẢI CÓ ĐỂ QUA MẶT TIKTOK
@@ -794,13 +793,28 @@ async function checkLiveStatus(username, proxy) {
           locales: [geo.lang, "en-US"],
         },
       });
+      // 💡 PHÂN LUỒNG XỬ LÝ SOCKS5 & HTTP
+      if (proxyUrlGot) {
+        if (proxyUrlGot.startsWith("socks")) {
+          // Bỏ qua proxyUrl, nhúng trực tiếp Agent SOCKS5 vào và tắt HTTP2
+          gotOptions.agent = {
+            http: getCachedAgent(proxy),
+            https: getCachedAgent(proxy),
+          };
+          gotOptions.http2 = false;
+        } else {
+          // Giao thức HTTP cũ vẫn dùng proxyUrl để hưởng lợi từ HTTP/2
+          gotOptions.proxyUrl = proxyUrlGot;
+        }
+      }
+
+      const fetchPromise = gotScraping(gotOptions);
 
       // 💡 LỚP GIÁP 1: Ép timeout cứng 15s phòng trường hợp thư viện got bị treo ngầm
       let timeoutHandle;
       const hardTimeout = new Promise((_, r) => {
         timeoutHandle = setTimeout(() => r(new Error("HARD_TIMEOUT")), 15000);
       });
-
       const res = await Promise.race([fetchPromise, hardTimeout]);
       clearTimeout(timeoutHandle);
 
