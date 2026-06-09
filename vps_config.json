@@ -3,6 +3,6 @@
   "workerName": "Worker_01",
   "proxyCount": 12,
   "useLocalNetwork": true,
-  "loadPerProxy": 10,
+  "loadPerProxy": 12,
   "localLoad": 20
 }
