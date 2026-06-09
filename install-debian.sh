@@ -114,12 +114,8 @@ fi
 # ==========================================
 # NPM INSTALL (SMART)
 # ==========================================
+npm install
 
-if [ -d "node_modules" ]; then
-    echo "[OK] node_modules exists -> skip npm install"
-else
-    npm install
-fi
 
 
 # ==========================================
