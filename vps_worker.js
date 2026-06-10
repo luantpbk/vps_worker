@@ -10,7 +10,7 @@ const { gotScraping } = require("got-scraping");
 const fs = require("fs");
 
 const CONFIG_FILE = "vps_config.json";
-const EULER_RATE = 2; // 1 key cho mỗi 3 proxy để tối ưu hóa hiệu suất
+const EULER_RATE = 3; // 1 key cho mỗi 3 proxy để tối ưu hóa hiệu suất
 let config = {
   masterUrl: "http://localhost:3001",
   workerName: `Worker_01`,
