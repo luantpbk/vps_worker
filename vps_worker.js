@@ -1107,14 +1107,20 @@ function startWebcast(channel, proxy) {
   let pendingBoxes = [];
 
   const emitChest = (data) => {
-    const isEnvelope = !!(data?.envelopeInfo || data?.type === "envelope");
-    const boxType = isEnvelope ? "tui" : "ruong";
     const boxData = data?.envelopeInfo || data?.treasureBoxData || data;
     const coins = boxData?.diamondCount || boxData?.coin || boxData?.coins || 0;
     const boxes =
       boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
 
     if (coins <= 0) return;
+
+    let boxType = "ruong"; // Mặc định giả định là rương
+
+    if (boxData?.businessType === 2 || boxData?.envelopeType === 2) {
+      boxType = "tui";
+    } else if (boxData?.businessType === 1 || boxData?.envelopeType === 1) {
+      boxType = "ruong";
+    }
 
     // 💡 GIẢI PHÁP TRIỆT ĐỂ: Lấy thời gian gốc gói tin từ server TikTok
     let originTimeMs = Date.now();
