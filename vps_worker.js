@@ -796,10 +796,11 @@ async function checkLiveStatus(username, proxy) {
       // 💡 PHÂN LUỒNG XỬ LÝ SOCKS5 & HTTP
       if (proxyUrlGot) {
         if (proxyUrlGot.startsWith("socks")) {
+          const activeAgent = getCachedAgent(proxy);
           // Bỏ qua proxyUrl, nhúng trực tiếp Agent SOCKS5 vào và tắt HTTP2
           gotOptions.agent = {
-            http: getCachedAgent(proxy),
-            https: getCachedAgent(proxy),
+            http: activeAgent,
+            https: activeAgent,
           };
           gotOptions.http2 = false;
         } else {
@@ -1064,12 +1065,12 @@ function startWebcast(channel, proxy) {
   // 💡 LẤY THÔNG SỐ VÙNG MIỀN THEO PROXY (NẾU CHƯA KỊP QUÉT THÌ MẶC ĐỊNH VN)
   const currentCountry = proxyGeoData[proxy] || "VN";
   const geo = getGeoParams(currentCountry);
-
+  const proxyAgent = getCachedAgent(proxy);
   const key = getNextEulerKey();
   let conn = new TikTokLiveConnection(channel.username, {
     signApiKey: key,
-    webClientOptions: { httpsAgent: getCachedAgent(proxy) },
-    websocketOptions: { agent: getCachedAgent(proxy) },
+    webClientOptions: { httpsAgent: proxyAgent },
+    websocketOptions: { agent: proxyAgent },
     processInitialData: true,
     fetchRoomInfoOnConnect: true,
     enableExtendedGiftInfo: false,
