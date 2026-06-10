@@ -781,7 +781,7 @@ async function checkLiveStatus(username, proxy) {
       // 💡 LẤY THÔNG SỐ VÙNG MIỀN THEO PROXY (NẾU CHƯA KỊP QUÉT THÌ MẶC ĐỊNH VN)
       const currentCountry = proxyGeoData[proxy] || "VN";
       const geo = getGeoParams(currentCountry);
-      const gotOptions = gotScraping({
+      const gotOptions = {
         url: `https://www.tiktok.com/${urlUsername}/live`,
         timeout: { request: 12000 },
         throwHttpErrors: false,
@@ -792,7 +792,7 @@ async function checkLiveStatus(username, proxy) {
           devices: ["desktop"],
           locales: [geo.lang, "en-US"],
         },
-      });
+      };
       // 💡 PHÂN LUỒNG XỬ LÝ SOCKS5 & HTTP
       if (proxyUrlGot) {
         if (proxyUrlGot.startsWith("socks")) {
