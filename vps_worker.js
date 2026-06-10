@@ -5,7 +5,6 @@ const { io: ClientIO } = require("socket.io-client");
 const customParser = require("socket.io-msgpack-parser");
 const { TikTokLiveConnection } = require("tiktok-live-connector");
 const HttpsProxyAgent = require("https-proxy-agent");
-const { SocksProxyAgent } = require("socks-proxy-agent"); // 💡 BỔ SUNG DÒNG NÀY
 const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
@@ -471,21 +470,12 @@ function formatProxyUrl(rawProxy) {
 function getCachedAgent(proxyStr) {
   if (!proxyStr || proxyStr === "local") return undefined;
   const proxyUrl = formatProxyUrl(proxyStr);
-
   if (!agentCache[proxyUrl]) {
-    // 💡 TÍNH NĂNG MỚI: Tách luồng xử lý SOCKS5 và HTTP/HTTPS
-    if (proxyUrl.startsWith("socks")) {
-      agentCache[proxyUrl] = new SocksProxyAgent(proxyUrl, {
-        keepAlive: true,
-        timeout: 60000,
-      });
-    } else {
-      agentCache[proxyUrl] = new HttpsProxyAgent(proxyUrl, {
-        keepAlive: true,
-        keepAliveMsecs: 60000,
-        rejectUnauthorized: false,
-      });
-    }
+    agentCache[proxyUrl] = new HttpsProxyAgent(proxyUrl, {
+      keepAlive: true,
+      keepAliveMsecs: 60000,
+      rejectUnauthorized: false,
+    });
   }
   return agentCache[proxyUrl];
 }
@@ -547,7 +537,6 @@ function connectToMaster() {
       heldProxies: dynamicProxies,
       heldKeys: exclusiveEulerKeys,
       supportIPv6: hasIPv6Support,
-      supportSocks5: true, // 💡 BỔ SUNG CỜ NÀY VÀO ĐÂY
     });
 
     const neededProxies = Math.max(
@@ -559,7 +548,6 @@ function connectToMaster() {
         count: neededProxies,
         workerName: config.workerName,
         supportIPv6: hasIPv6Support,
-        supportSocks5: true, // 💡 BỔ SUNG CỜ NÀY VÀO ĐÂY
       });
 
     const neededKeys = Math.max(
@@ -781,8 +769,9 @@ async function checkLiveStatus(username, proxy) {
       // 💡 LẤY THÔNG SỐ VÙNG MIỀN THEO PROXY (NẾU CHƯA KỊP QUÉT THÌ MẶC ĐỊNH VN)
       const currentCountry = proxyGeoData[proxy] || "VN";
       const geo = getGeoParams(currentCountry);
-      const gotOptions = {
+      const fetchPromise = gotScraping({
         url: `https://www.tiktok.com/${urlUsername}/live`,
+        proxyUrl: proxyUrlGot,
         timeout: { request: 12000 },
         throwHttpErrors: false,
         http2: true, // 💡 BẮT BUỘC PHẢI CÓ ĐỂ QUA MẶT TIKTOK
@@ -792,30 +781,14 @@ async function checkLiveStatus(username, proxy) {
           devices: ["desktop"],
           locales: [geo.lang, "en-US"],
         },
-      };
-      // 💡 PHÂN LUỒNG XỬ LÝ SOCKS5 & HTTP
-      if (proxyUrlGot) {
-        if (proxyUrlGot.startsWith("socks")) {
-          const activeAgent = getCachedAgent(proxy);
-          // Bỏ qua proxyUrl, nhúng trực tiếp Agent SOCKS5 vào và tắt HTTP2
-          gotOptions.agent = {
-            http: activeAgent,
-            https: activeAgent,
-          };
-          gotOptions.http2 = false;
-        } else {
-          // Giao thức HTTP cũ vẫn dùng proxyUrl để hưởng lợi từ HTTP/2
-          gotOptions.proxyUrl = proxyUrlGot;
-        }
-      }
-
-      const fetchPromise = gotScraping(gotOptions);
+      });
 
       // 💡 LỚP GIÁP 1: Ép timeout cứng 15s phòng trường hợp thư viện got bị treo ngầm
       let timeoutHandle;
       const hardTimeout = new Promise((_, r) => {
         timeoutHandle = setTimeout(() => r(new Error("HARD_TIMEOUT")), 15000);
       });
+
       const res = await Promise.race([fetchPromise, hardTimeout]);
       clearTimeout(timeoutHandle);
 
@@ -1065,12 +1038,12 @@ function startWebcast(channel, proxy) {
   // 💡 LẤY THÔNG SỐ VÙNG MIỀN THEO PROXY (NẾU CHƯA KỊP QUÉT THÌ MẶC ĐỊNH VN)
   const currentCountry = proxyGeoData[proxy] || "VN";
   const geo = getGeoParams(currentCountry);
-  const proxyAgent = getCachedAgent(proxy);
+
   const key = getNextEulerKey();
   let conn = new TikTokLiveConnection(channel.username, {
     signApiKey: key,
-    webClientOptions: { httpsAgent: proxyAgent },
-    websocketOptions: { agent: proxyAgent },
+    webClientOptions: { httpsAgent: getCachedAgent(proxy) },
+    websocketOptions: { agent: getCachedAgent(proxy) },
     processInitialData: true,
     fetchRoomInfoOnConnect: true,
     enableExtendedGiftInfo: false,
