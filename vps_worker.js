@@ -8,7 +8,6 @@ const HttpsProxyAgent = require("https-proxy-agent");
 const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
-const { log } = require("console");
 
 const CONFIG_FILE = "vps_config.json";
 const EULER_RATE = 2; // 1 key cho mỗi 3 proxy để tối ưu hóa hiệu suất
@@ -20,7 +19,7 @@ let config = {
   loadPerProxy: 10,
   localLoad: 50,
 };
-const MAX_EULER_INTERVAL = 3000;
+const MAX_EULER_INTERVAL = 2000;
 let currentDynamicMaxLoad = 0;
 
 function loadConfig() {
@@ -905,9 +904,9 @@ setInterval(async () => {
     if (!activeConnections[channel.username]) {
       startWebcast(channel, proxy);
 
-      // 💡 GIÃN CÁCH KẾT NỐI: Bắt buộc nghỉ 3-5s trước khi cắm kênh tiếp theo
+      // 💡 GIÃN CÁCH KẾT NỐI: Bắt buộc nghỉ 2-3s trước khi cắm kênh tiếp theo
       await new Promise((r) =>
-        setTimeout(r, MAX_EULER_INTERVAL + Math.floor(Math.random() * 5) * 500),
+        setTimeout(r, MAX_EULER_INTERVAL + Math.floor(Math.random() * 5) * 200),
       );
     }
   } finally {
@@ -1108,10 +1107,10 @@ function startWebcast(channel, proxy) {
   let pendingBoxes = [];
 
   const emitChest = (data) => {
+    const isEnvelope = !!(data?.envelopeInfo || data?.type === "envelope");
+    const boxType = isEnvelope ? "tui" : "ruong";
     const boxData = data?.envelopeInfo || data?.treasureBoxData || data;
-
     const coins = boxData?.diamondCount || boxData?.coin || boxData?.coins || 0;
-
     const boxes =
       boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
 
@@ -1139,6 +1138,7 @@ function startWebcast(channel, proxy) {
       roomId,
       workerTime: originTimeMs,
       isHanging: isProcessingInitial,
+      type: boxType,
     });
   };
   // 💡 LẮNG NGHE SỰ KIỆN TRƯỚC KHI CONNECT ĐỂ BẮT RƯƠNG TREO NGAY LẬP TỨC
