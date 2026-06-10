@@ -17,7 +17,6 @@
     "https-proxy-agent": "^5.0.0",
     "socket.io-client": "^4.8.3",
     "socket.io-msgpack-parser": "^3.0.2",
-    "socks-proxy-agent": "^10.1.0",
     "tiktok-live-connector": "^2.1.1-beta1"
   }
 }
