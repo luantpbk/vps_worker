@@ -22,8 +22,19 @@ let config = {
   localLoad: 50,
   activeLibrary: "tiktok-live-connector",
 };
-const MAX_EULER_INTERVAL = 2000;
 let currentDynamicMaxLoad = 0;
+let globalConnectTokens = 10;
+let lastRefill = Date.now();
+
+setInterval(() => {
+  const now = Date.now();
+  const elapsed = now - lastRefill;
+
+  if (elapsed >= 1000) {
+    globalConnectTokens = 10; // 10 connect / giây toàn hệ thống
+    lastRefill = now;
+  }
+}, 200);
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
@@ -1036,6 +1047,11 @@ setInterval(async () => {
     const { channel, proxy } = eulerConnectionQueue.shift();
 
     if (!activeConnections[channel.username]) {
+      if (globalConnectTokens <= 0) {
+        return setTimeout(() => executeTask(channel), 500);
+      }
+
+      globalConnectTokens--;
       startWebcast(channel, proxy);
 
       // 💡 VÁ LỖI TỈ LỆ: Tính toán tốc độ cắm dựa trên SỐ LƯỢNG KEY thực tế
@@ -1049,7 +1065,7 @@ setInterval(async () => {
         dynamicDelay = Math.max(500, 12000 / activeKeys);
       } else {
         // Euler (TLC) (Tỉ lệ 1 Key : 3 Proxy)
-        // 1 Key phải gánh nhiều kết nối hơn, lấy mốc an toàn là 3 giây hồi chiêu cho 1 Key
+        // 1 Key phải gánh nhiều kết nối hơn, lấy mốc an toàn là 5 giây hồi chiêu cho 1 Key
         activeKeys = Math.max(1, exclusiveEulerKeys.length);
         dynamicDelay = Math.max(500, 5000 / activeKeys);
       }
@@ -1277,8 +1293,7 @@ function startWebcast(channel, proxy) {
 
     const isFatalKey =
       msg.includes("insufficient balance") ||
-      msg.includes("api key is invalid") ||
-      msg.includes("rate_limit_account_day");
+      msg.includes("api key is invalid");
 
     const isOverloadedKey =
       (msg.includes("too many connections") ||
