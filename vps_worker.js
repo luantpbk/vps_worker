@@ -1079,7 +1079,9 @@ function startWebcast(channel, proxy) {
 
     // 💡 1. NHÓM LỖI CHẾT HẲN (Hết tiền, sai key, hết ngạch ngày) -> XÓA KEY
     const isFatalKey =
-      msg.includes("insufficient balance") || msg.includes("invalid api key");
+      msg.includes("insufficient balance") ||
+      msg.includes("invalid api key") ||
+      msg.includes("api key is invalid");
 
     // 💡 2. NHÓM LỖI QUÁ TẢI TẠM THỜI (Full slot, spam nhanh) -> GIỮ LẠI KEY, CHỈ TẠM DỪNG CẮM
     const isOverloadedKey =
