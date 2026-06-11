@@ -1291,6 +1291,10 @@ function startWebcast(channel, proxy) {
         region: geo.region,
       },
     });
+    console.log("Key được chọn cho Euler:", key);
+    conn.apiClient.webcast.getRateLimits().then((response) => {
+      console.log("Rate Limits:", response.data);
+    });
   }
 
   const checkAndReportDeadKey = (errObj, targetKey) => {
