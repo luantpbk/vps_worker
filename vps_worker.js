@@ -1277,11 +1277,14 @@ function startWebcast(channel, proxy) {
 
     const isFatalKey =
       msg.includes("insufficient balance") ||
-      msg.includes("api key is invalid");
+      msg.includes("api key is invalid") ||
+      msg.includes("rate_limit_account_day");
+
     const isOverloadedKey =
-      msg.includes("too many connections") ||
-      msg.includes("rate limit for your plan") ||
-      msg.includes("rate_limit_");
+      (msg.includes("too many connections") ||
+        msg.includes("rate limit for your plan") ||
+        msg.includes("rate_limit_")) &&
+      !isFatalKey;
 
     if (isFatalKey) {
       logWarn(`[❌] 🔑 PHÁT HIỆN KEY CHẾT HẲN (${libraryUsed}): ${msg}`);
