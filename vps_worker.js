@@ -1120,9 +1120,6 @@ function startWebcast(channel, proxy) {
     const coins = boxData?.diamondCount || boxData?.coin || boxData?.coins || 0;
     const boxes =
       boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
-
-    if (coins <= 0) return;
-
     let boxType = "ruong"; // Mặc định là rương thường
     const bType = boxData?.businessType;
     const sId = boxData?.skinId;
@@ -1142,6 +1139,13 @@ function startWebcast(channel, proxy) {
     if (idcStr.includes("packet") || idcStr.includes("red")) {
       boxType = "tui";
     }
+
+    if (boxType === "tui") {
+      console.log(`⚠️ Phát hiện túi ${channel.username} | Coins: ${coins}`);
+      console.log(boxData);
+    }
+
+    if (coins <= 0) return;
 
     // 💡 GIẢI PHÁP TRIỆT ĐỂ: Lấy thời gian gốc gói tin từ server TikTok
     let originTimeMs = Date.now();
