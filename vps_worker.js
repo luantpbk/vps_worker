@@ -1331,9 +1331,8 @@ function startWebcast(channel, proxy) {
 
         // Gọi API lên Euler để lấy thông tin Quota thật sự
         const res = await eulerClient.webcast.getRateLimits();
-        console.log("Thông tin Rate Limit từ API Euler:", res);
-        if (res && res.day) {
-          const remaining = res.day.remaining;
+        if (res && res.data && res.data.day) {
+          const remaining = res.data.day.remaining;
 
           if (remaining <= 0) {
             logWarn(
