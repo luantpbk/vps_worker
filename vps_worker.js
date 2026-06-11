@@ -1268,6 +1268,16 @@ function startWebcast(channel, proxy) {
     conn = new TikTokLive(tiktoolOpts);
   } else {
     key = getNextEulerKey();
+    if (!key) {
+      logWarn(
+        `⏳ Thiếu Euler Key cho kênh [${channel.username}]. Xếp hàng chờ Master cấp hoặc chờ hồi chiêu...`,
+      );
+      connectionLocks.delete(channel.username);
+      setTimeout(() => {
+        safeEmitRadarResult({ channel, status: "REQUEUE" });
+      }, 60000);
+      return;
+    }
     conn = new TikTokLiveConnection(channel.username, {
       signApiKey: key,
       webClientOptions: { httpsAgent: getCachedAgent(proxy) },
