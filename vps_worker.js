@@ -1113,7 +1113,9 @@ function startWebcast(channel, proxy) {
       boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
 
     if (coins <= 0) return;
-
+    console.log(
+      `[DEBUG HỘP] Kênh: ${channel.username} | businessType: ${boxData?.businessType} | envelopeType: ${boxData?.envelopeType}`,
+    );
     let boxType = "ruong"; // Mặc định giả định là rương
 
     if (boxData?.businessType === 2 || boxData?.envelopeType === 2) {
