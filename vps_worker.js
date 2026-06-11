@@ -1114,7 +1114,7 @@ function startWebcast(channel, proxy) {
 
     if (coins <= 0) return;
     console.log(
-      `[DEBUG HỘP] Kênh: ${channel.username} | businessType: ${boxData?.businessType} | envelopeType: ${boxData?.envelopeType}`,
+      `[DEBUG HỘP] Kênh: ${channel.username} | Box Data: ${JSON.stringify(boxData)}`,
     );
     let boxType = "ruong"; // Mặc định giả định là rương
 
