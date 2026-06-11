@@ -725,8 +725,14 @@ setInterval(async () => {
     return;
   isProcessingQueue = true;
   try {
+    // 💡 1. TÍNH TOÁN LẠI TỔNG TẢI DỰ KIẾN (Rất quan trọng)
+    // Tổng tải = Đã cắm + Đang xếp hàng chờ cắm + Đang check HTTP
+    const currentActive = Object.keys(activeConnections).length;
+    const totalIntendedLoad =
+      currentActive + eulerConnectionQueue.length + pendingChecks.size;
+
     if (
-      Object.keys(activeConnections).length >= currentDynamicMaxLoad &&
+      totalIntendedLoad >= currentDynamicMaxLoad &&
       currentDynamicMaxLoad > 0
     ) {
       while (localTaskQueue.length > 0)
@@ -740,13 +746,14 @@ setInterval(async () => {
     const maxConcurrentChecks =
       (dynamicProxies.length + (config.useLocalNetwork ? 1 : 0)) * 2;
     const availableCheckSlots = maxConcurrentChecks - pendingChecks.size;
-    if (availableCheckSlots <= 0) return;
+    // 💡 2. KIỂM SOÁT SLOT: Chỉ check đúng số lượng kênh để lấp đầy phần tải còn thiếu
+    const loadShortage = currentDynamicMaxLoad - totalIntendedLoad;
+    const actualSlots = Math.min(availableCheckSlots, loadShortage);
 
-    const tasksToProcess = Math.min(
-      maxConcurrentChecks,
-      availableCheckSlots,
-      localTaskQueue.length,
-    );
+    // Không còn slot nào thì dừng luôn vòng lặp
+    if (actualSlots <= 0) return;
+
+    const tasksToProcess = Math.min(actualSlots, localTaskQueue.length);
     for (let i = 0; i < tasksToProcess; i++) {
       const channel = localTaskQueue.splice(0, 1)[0];
       pendingChecks.set(channel.username, Date.now());
@@ -1113,15 +1120,25 @@ function startWebcast(channel, proxy) {
       boxData?.peopleCount || boxData?.totalUser || boxData?.boxes || 0;
 
     if (coins <= 0) return;
-    console.log(
-      `[DEBUG HỘP] Kênh: ${channel.username} | Box Data: ${JSON.stringify(boxData)}`,
-    );
-    let boxType = "ruong"; // Mặc định giả định là rương
 
-    if (boxData?.businessType === 2 || boxData?.envelopeType === 2) {
+    let boxType = "ruong"; // Mặc định là rương thường
+    const bType = boxData?.businessType;
+    const sId = boxData?.skinId;
+
+    // 💡 LOGIC PHÂN LOẠI CHUẨN 3 LOẠI HỘP
+    if (bType === 1) {
+      boxType = "ruong"; // Rương thường
+    } else if (bType === 4) {
+      boxType = "ruong_vang"; // Rương vàng
+    } else if (
+      (bType !== undefined && bType !== 1 && bType !== 4) ||
+      (sId !== undefined && sId !== 0)
+    ) {
+      boxType = "tui"; // Các mã lạ khác quy vào Túi xu
+    }
+    const idcStr = String(boxData?.envelopeIdc || "").toLowerCase();
+    if (idcStr.includes("packet") || idcStr.includes("red")) {
       boxType = "tui";
-    } else if (boxData?.businessType === 1 || boxData?.envelopeType === 1) {
-      boxType = "ruong";
     }
 
     // 💡 GIẢI PHÁP TRIỆT ĐỂ: Lấy thời gian gốc gói tin từ server TikTok
