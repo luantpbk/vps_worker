@@ -9,6 +9,7 @@ const HttpsProxyAgent = require("https-proxy-agent");
 const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
+const EulerStreamApiClient = require("@eulerstream/euler-api-sdk").default;
 
 const CONFIG_FILE = "vps_config.json";
 const EULER_RATE = 3; // 1 key cho mỗi 3 proxy để tối ưu hóa hiệu suất
@@ -1291,13 +1292,9 @@ function startWebcast(channel, proxy) {
         region: geo.region,
       },
     });
-    console.log("Key được chọn cho Euler:", key);
-    conn.apiClient.webcast.getRateLimits().then((response) => {
-      console.log("Rate Limits:", response.data);
-    });
   }
 
-  const checkAndReportDeadKey = (errObj, targetKey) => {
+  const checkAndReportDeadKey = async (errObj, targetKey) => {
     if (!targetKey) return false;
     let errText =
       typeof errObj === "string"
@@ -1305,31 +1302,101 @@ function startWebcast(channel, proxy) {
         : errObj?.message || JSON.stringify(errObj);
     const msg = String(errText).toLowerCase();
 
-    const isFatalKey =
+    // 1. ÁN TỬ TỨC THÌ (Lỗi cứng không cần check API): Sai Key, Hết tiền
+    if (
       msg.includes("insufficient balance") ||
-      msg.includes("api key is invalid");
-
-    const isOverloadedKey =
-      (msg.includes("too many connections") ||
-        msg.includes("rate limit for your plan") ||
-        msg.includes("rate_limit_")) &&
-      !isFatalKey;
-
-    if (isFatalKey) {
-      logWarn(`[❌] 🔑 PHÁT HIỆN KEY CHẾT HẲN (${libraryUsed}): ${msg}`);
-      if (masterSocket?.connected) {
+      msg.includes("api key is invalid")
+    ) {
+      logWarn(
+        `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Báo Master vứt bỏ Key này!`,
+      );
+      if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
           workerName: config.workerName,
           library: libraryUsed,
         });
+      return true;
+    }
+
+    // 2. CHECK TRỰC TIẾP TỪ MÁY CHỦ EULER (Nếu có dấu hiệu Rate Limit)
+    if (
+      libraryUsed === "tiktok-live-connector" &&
+      (msg.includes("rate limit") ||
+        msg.includes("too many connections") ||
+        msg.includes("rate_limit_"))
+    ) {
+      try {
+        const eulerClient = new EulerStreamApiClient({ apiKey: targetKey });
+
+        // Gọi API lên Euler để lấy thông tin Quota thật sự
+        const res = await eulerClient.webcast.getRateLimits();
+        console.log("Thông tin Rate Limit từ API Euler:", res);
+        if (res && res.day) {
+          const remaining = res.day.remaining;
+
+          if (remaining <= 0) {
+            logWarn(
+              `[❌] 🔑 EULER KEY ĐÃ CHÁY SẠCH QUOTA NGÀY (Còn 0 lượt): Báo Master đổi Key mới!`,
+            );
+            if (masterSocket?.connected)
+              masterSocket.emit("worker_report_dead_key", {
+                key: targetKey,
+                workerName: config.workerName,
+                library: libraryUsed,
+              });
+            return true;
+          } else {
+            logWarn(
+              `[🛑] EULER KEY CÒN QUOTA (${remaining} lượt) NHƯNG BỊ BLOCK SPAM: Cho Key ngủ 15 phút!`,
+            );
+            keyCooldown[targetKey] = Date.now() + 900000; // Khóa 15 phút
+            return true;
+          }
+        }
+      } catch (apiErr) {
+        logWarn(
+          `⚠️ Lỗi khi check API Euler: ${apiErr.message}. Rơi vào check dự phòng...`,
+        );
+        // Nếu API sập, tiếp tục chạy xuống khối dự phòng bên dưới
       }
+    }
+
+    // 3. XỬ LÝ DỰ PHÒNG HOẶC CHO THƯ VIỆN TIKTOOL
+    const isFatalKey =
+      msg.includes("rate limit for your plan") ||
+      msg.includes("rate_limit_account_day");
+    const isExhaustedKey =
+      msg.includes("rate_limit_account_hour") ||
+      msg.includes("rate_limit_account_minute");
+    const isOverloadedKey =
+      msg.includes("too many connections") ||
+      (msg.includes("rate_limit_") && !isFatalKey && !isExhaustedKey);
+
+    if (isFatalKey) {
+      logWarn(
+        `[❌] 🔑 KEY ĐÃ CHÁY SẠCH QUOTA (${libraryUsed}): Báo Master vứt bỏ!`,
+      );
+      if (masterSocket?.connected)
+        masterSocket.emit("worker_report_dead_key", {
+          key: targetKey,
+          workerName: config.workerName,
+          library: libraryUsed,
+        });
+      return true;
+    }
+
+    if (isExhaustedKey) {
+      logWarn(
+        `[🛑] KEY HẾT QUOTA GIỜ/PHÚT (${libraryUsed}): Cho Key ngủ 15 phút để hồi năng lượng!`,
+      );
+      keyCooldown[targetKey] = Date.now() + 900000; // Khóa 15 phút
       return true;
     }
 
     if (isOverloadedKey) {
-      logWarn(`[⚠️] ⏳ KEY QUÁ TẢI (${libraryUsed}): ${msg}`);
-      keyCooldown[targetKey] = Date.now() + 15000;
+      logWarn(`[⚠️] ⏳ KEY CẮM QUÁ NHANH (${libraryUsed}): ${msg}`);
+      keyCooldown[targetKey] = Date.now() + 15000; // Khóa 15 giây
       return true;
     }
     return false;
@@ -1395,7 +1462,7 @@ function startWebcast(channel, proxy) {
   // Chuẩn hóa Binding sự kiện cho 2 Thư viện
   if (libraryUsed === "tiktool") {
     conn.on("chest", catchTreasureBox);
-    conn.on("error", (err) => checkAndReportDeadKey(err, key));
+    conn.on("error", async (err) => await checkAndReportDeadKey(err, key));
     conn.on("disconnected", () => {
       stopWebcast(channel.username);
       safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
@@ -1406,8 +1473,8 @@ function startWebcast(channel, proxy) {
     conn.on("roomUser", (u) => {
       if (u?.viewerCount) currentViewers = u.viewerCount;
     });
-    conn.on("warn", (err) => checkAndReportDeadKey(err, key));
-    conn.on("error", (err) => checkAndReportDeadKey(err, key));
+    conn.on("warn", async (err) => await checkAndReportDeadKey(err, key));
+    conn.on("error", async (err) => await checkAndReportDeadKey(err, key));
     conn.on("streamEnd", () => {
       stopWebcast(channel.username);
       safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
@@ -1455,9 +1522,9 @@ function startWebcast(channel, proxy) {
         isProcessingInitial = false;
       }, 5000);
     })
-    .catch((err) => {
+    .catch(async (err) => {
       clearTimeout(timeoutHandle);
-      const isKeyDead = checkAndReportDeadKey(err, key);
+      const isKeyDead = await checkAndReportDeadKey(err, key);
       let errMsg = String(err?.message || err).toLowerCase();
 
       logWarn(
