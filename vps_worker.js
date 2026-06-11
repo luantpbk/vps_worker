@@ -1051,7 +1051,7 @@ setInterval(async () => {
         // Euler (TLC) (Tỉ lệ 1 Key : 3 Proxy)
         // 1 Key phải gánh nhiều kết nối hơn, lấy mốc an toàn là 3 giây hồi chiêu cho 1 Key
         activeKeys = Math.max(1, exclusiveEulerKeys.length);
-        dynamicDelay = Math.max(200, 3000 / activeKeys);
+        dynamicDelay = Math.max(500, 5000 / activeKeys);
       }
 
       // Thêm độ nhiễu ngẫu nhiên (Jitter) từ 0-500ms để vượt qua các bộ lọc Bot tĩnh
@@ -1150,7 +1150,7 @@ async function executeTask(channel) {
       } else {
         proxyCooldown["local"] = Date.now() + 45000;
       }
-      safeEmitRadarResult({ channel, status: "REQUEUE" });
+      safeEmitRadarResult({ channel, status: "ERROR" });
       return;
     }
 
@@ -1300,7 +1300,7 @@ function startWebcast(channel, proxy) {
 
     if (isOverloadedKey) {
       logWarn(`[⚠️] ⏳ KEY QUÁ TẢI (${libraryUsed}): ${msg}`);
-      keyCooldown[targetKey] = Date.now() + 5000;
+      keyCooldown[targetKey] = Date.now() + 15000;
       return true;
     }
     return false;
@@ -1437,7 +1437,7 @@ function startWebcast(channel, proxy) {
 
       if (isKeyDead) {
         setTimeout(() => {
-          safeEmitRadarResult({ channel, status: "REQUEUE" });
+          safeEmitRadarResult({ channel, status: "ERROR" });
         }, 2000);
         stopWebcast(channel.username);
         return;
@@ -1461,14 +1461,14 @@ function startWebcast(channel, proxy) {
               masterSocket.emit("worker_report_dead_proxy", { proxy: proxy });
           } else {
             proxyCooldown[proxy] = Date.now() + 60000;
-            safeEmitRadarResult({ channel, status: "REQUEUE" });
+            safeEmitRadarResult({ channel, status: "ERROR" });
           }
         } else {
           proxyCooldown["local"] = Date.now() + 45000;
-          safeEmitRadarResult({ channel, status: "REQUEUE" });
+          safeEmitRadarResult({ channel, status: "ERROR" });
         }
       } else {
-        safeEmitRadarResult({ channel, status: "REQUEUE" });
+        safeEmitRadarResult({ channel, status: "ERROR" });
       }
       stopWebcast(channel.username);
     });
