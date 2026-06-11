@@ -1391,7 +1391,7 @@ function startWebcast(channel, proxy) {
     timeoutHandle = setTimeout(() => {
       console.log("[STILL WAITING]", channel.username);
       r(new Error("SOCKET_TIMEOUT"));
-    }, 10000);
+    }, 30000);
   });
   if (libraryUsed === "tiktool") {
     consumeTiktoolRequest(key);
