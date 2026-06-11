@@ -1239,7 +1239,10 @@ function startWebcast(channel, proxy) {
       // 💡 Lấy kết quả xem có phải lỗi do Key không
       const isKeyDead = checkAndReportDeadKey(err, key);
       let errMsg = String(err?.message || err).toLowerCase();
-
+      // 💡 THÊM DÒNG NÀY ĐỂ BÁO CÁO LỖI CHÍNH XÁC RA MÀN HÌNH VPS
+      logWarn(
+        `[SOCKET LỖI] Kênh: ${channel.username} | Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
+      );
       // 💡 FIX QUAN TRỌNG: Nếu lỗi là do Key, TRẮNG ÁN CHO PROXY.
       // Không được để code chạy xuống dưới vì chữ "rate limit" sẽ làm Proxy bị phạt oan!
       if (isKeyDead) {
