@@ -88,11 +88,9 @@ fi
 
 echo "=== Install npm packages ==="
 
-if [ -d "node_modules" ]; then
-    echo "[OK] node_modules exists -> skip npm install"
-else
-    npm install
-fi
+
+npm install
+
 
 # ==========================================
 # CONFIG UPDATE
