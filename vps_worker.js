@@ -24,18 +24,18 @@ let config = {
   activeLibrary: "tiktok-live-connector",
 };
 let currentDynamicMaxLoad = 0;
-let globalConnectTokens = 10;
-let lastRefill = Date.now();
 
+let globalConnectTokens = config.proxyCount + (config.useLocalNetwork ? 1 : 0);
+let lastRefill = Date.now();
 setInterval(() => {
   const now = Date.now();
   const elapsed = now - lastRefill;
 
-  if (elapsed >= 1000) {
-    globalConnectTokens = 10; // 10 connect / giây toàn hệ thống
+  if (elapsed >= 2000) {
+    globalConnectTokens = config.proxyCount + (config.useLocalNetwork ? 1 : 0);
     lastRefill = now;
   }
-}, 200);
+}, 500);
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
@@ -1049,7 +1049,7 @@ setInterval(async () => {
 
     if (!activeConnections[channel.username]) {
       if (globalConnectTokens <= 0) {
-        return setTimeout(() => executeTask(channel), 500);
+        return setTimeout(() => executeTask(channel), 1000);
       }
 
       globalConnectTokens--;
@@ -1070,14 +1070,9 @@ setInterval(async () => {
         activeKeys = Math.max(1, exclusiveEulerKeys.length);
         dynamicDelay = Math.max(500, 5000 / activeKeys);
       }
-
       // Thêm độ nhiễu ngẫu nhiên (Jitter) từ 0-500ms để vượt qua các bộ lọc Bot tĩnh
       const jitter = Math.floor(Math.random() * 500);
       const totalDelay = Math.round(dynamicDelay + jitter);
-
-      logInfo(
-        `⏱️ Cắm [${channel.username}]. Nghỉ ${totalDelay}ms (Đang xả tải dựa trên ${activeKeys} ${config.activeLibrary === "tiktool" ? "Tiktool" : "Euler"} Keys)...`,
-      );
       await new Promise((r) => setTimeout(r, totalDelay));
     }
   } finally {
@@ -1422,6 +1417,11 @@ function startWebcast(channel, proxy) {
     const idcStr = String(boxData?.envelopeIdc || "").toLowerCase();
     if (idcStr.includes("packet") || idcStr.includes("red")) boxType = "tui";
 
+    if (boxType === "tui") {
+      console.log(`🧧 TÚI: ${channel.username}`);
+      console.log(data);
+    }
+
     if (coins <= 0) return;
 
     let originTimeMs = Date.now();
@@ -1486,15 +1486,11 @@ function startWebcast(channel, proxy) {
 
   let timeoutHandle;
   const timeoutPromise = new Promise((_, r) => {
-    timeoutHandle = setTimeout(() => {
-      console.log("[STILL WAITING]", channel.username);
-      r(new Error("SOCKET_TIMEOUT"));
-    }, 30000);
+    timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 30000);
   });
   if (libraryUsed === "tiktool") {
     consumeTiktoolRequest(key);
   }
-  console.log("[CONNECT START]", channel.username, key.slice(0, 8));
   Promise.race([conn.connect(), timeoutPromise])
     .then((state) => {
       roomId =
@@ -1617,9 +1613,9 @@ setInterval(() => {
   for (let user in activeConnections) {
     const conn = activeConnections[user];
 
-    if (now - (conn.lastActive || now) > 5 * 60 * 1000) {
+    if (now - (conn.lastActive || now) > 60 * 60 * 1000) {
       logWarn(
-        `✂️ Cắt bỏ Socket Zombie [${user}] do 5 phút không có tín hiệu mạng.`,
+        `✂️ Cắt bỏ Socket Zombie [${user}] do 60 phút không có tín hiệu quà.`,
       );
       stopWebcast(user);
       safeEmitRadarResult({
