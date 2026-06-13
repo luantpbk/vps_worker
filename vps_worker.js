@@ -126,13 +126,30 @@ function canUseTiktoolKey(key) {
 
   return tiktoolRateLimiter[key].length < TIKTOOL_REQUESTS_PER_MINUTE;
 }
-
 function consumeTiktoolRequest(key) {
   if (!tiktoolRateLimiter[key]) {
     tiktoolRateLimiter[key] = [];
   }
 
   tiktoolRateLimiter[key].push(Date.now());
+}
+
+const EULER_REQUESTS_PER_MINUTE = 12; // An toàn: Tối đa 12 kết nối/phút cho 1 Euler Key
+let eulerRateLimiter = {};
+function canUseEulerKey(key) {
+  if (!key) return false;
+  const now = Date.now();
+  if (!eulerRateLimiter[key]) eulerRateLimiter[key] = [];
+
+  // Chỉ giữ lại các request trong 60 giây gần nhất
+  eulerRateLimiter[key] = eulerRateLimiter[key].filter((t) => now - t < 60000);
+
+  return eulerRateLimiter[key].length < EULER_REQUESTS_PER_MINUTE;
+}
+
+function consumeEulerRequest(key) {
+  if (!eulerRateLimiter[key]) eulerRateLimiter[key] = [];
+  eulerRateLimiter[key].push(Date.now());
 }
 
 let pendingChecks = new Map();
@@ -456,11 +473,10 @@ function getNextAvailableProxy() {
 
 function getNextEulerKey() {
   if (exclusiveEulerKeys.length === 0) return null;
-
   const now = Date.now();
-  // 💡 CHỈ LẤY CÁC KEY ĐANG KHÔNG BỊ PHẠT NGHỈ
+  // 💡 LỌC KÉP: Bỏ qua key đang bị phạt nghỉ VÀ bỏ qua key đã hết Quota trong 1 phút qua
   const availableKeys = exclusiveEulerKeys.filter(
-    (k) => !keyCooldown[k] || now > keyCooldown[k],
+    (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
   );
 
   if (availableKeys.length === 0) {
@@ -1274,7 +1290,7 @@ function startWebcast(channel, proxy) {
       connectionLocks.delete(channel.username);
       setTimeout(() => {
         safeEmitRadarResult({ channel, status: "REQUEUE" });
-      }, 60000);
+      }, 15000);
       return;
     }
     conn = new TikTokLiveConnection(channel.username, {
@@ -1490,6 +1506,8 @@ function startWebcast(channel, proxy) {
   });
   if (libraryUsed === "tiktool") {
     consumeTiktoolRequest(key);
+  } else {
+    consumeEulerRequest(key); // 💡 Kích hoạt ghi nhận lượt dùng cho Euler Key
   }
   Promise.race([conn.connect(), timeoutPromise])
     .then((state) => {
