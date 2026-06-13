@@ -1452,7 +1452,7 @@ function startWebcast(channel, proxy) {
   if (libraryUsed === "tiktool") {
     conn.on("chest", catchTreasureBox);
     conn.on("error", async (err) => {
-      await checkAndReportDeadKey(err, key);
+      const isDead = await checkAndReportDeadKey(err, key);
       // 💡 VÁ LỖI CỐT LÕI: Nếu Key đã chết, rút điện kết nối ngay để chặn thư viện reconnect ngầm
       if (isDead) stopWebcast(channel.username);
     });
@@ -1466,9 +1466,12 @@ function startWebcast(channel, proxy) {
     conn.on("roomUser", (u) => {
       if (u?.viewerCount) currentViewers = u.viewerCount;
     });
-    conn.on("warn", async (err) => await checkAndReportDeadKey(err, key));
+    conn.on("warn", async (err) => {
+      const isDead = await checkAndReportDeadKey(err, key); // 💡 Khai báo an toàn
+      if (isDead) stopWebcast(channel.username);
+    });
     conn.on("error", async (err) => {
-      await checkAndReportDeadKey(err, key);
+      const isDead = await checkAndReportDeadKey(err, key);
       if (isDead) stopWebcast(channel.username);
     });
     conn.on("streamEnd", () => {
