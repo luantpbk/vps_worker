@@ -1408,7 +1408,9 @@ function startWebcast(channel, proxy) {
     const bType = boxData?.businessType;
     if (bType === 1 || String(bType) === "1") boxType = "ruong";
     else if (bType === 4 || String(bType) === "4") boxType = "ruong_vang";
-    if (coins <= 10) return;
+    if (coins <= 15) return;
+    if (activeConnections[channel.username])
+      activeConnections[channel.username].lastActive = Date.now();
     let originTimeMs = Date.now();
     if (data?.common?.createTime) {
       originTimeMs = Number(data.common.createTime);
@@ -1434,8 +1436,6 @@ function startWebcast(channel, proxy) {
   };
 
   const catchTreasureBox = (data) => {
-    if (activeConnections[channel.username])
-      activeConnections[channel.username].lastActive = Date.now();
     if (!roomId) {
       pendingBoxes.push(data);
       return;
