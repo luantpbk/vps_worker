@@ -1308,6 +1308,7 @@ function startWebcast(channel, proxy) {
       logWarn(
         `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Báo Master vứt bỏ Key này!`,
       );
+      keyCooldown[targetKey] = Date.now() + 60000;
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
@@ -1336,6 +1337,7 @@ function startWebcast(channel, proxy) {
             logWarn(
               `[❌] 🔑 EULER KEY ĐÃ CHÁY SẠCH QUOTA NGÀY (Còn 0 lượt): Báo Master đổi Key mới!`,
             );
+            keyCooldown[targetKey] = Date.now() + 60000;
             if (masterSocket?.connected)
               masterSocket.emit("worker_report_dead_key", {
                 key: targetKey,
@@ -1374,6 +1376,7 @@ function startWebcast(channel, proxy) {
       logWarn(
         `[❌] 🔑 KEY ĐÃ CHÁY SẠCH QUOTA (${libraryUsed}): Báo Master vứt bỏ!`,
       );
+      keyCooldown[targetKey] = Date.now() + 60000;
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
