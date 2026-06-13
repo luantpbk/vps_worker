@@ -1294,6 +1294,8 @@ function startWebcast(channel, proxy) {
 
   const checkAndReportDeadKey = async (errObj, targetKey) => {
     if (!targetKey) return false;
+    if (keyCooldown[targetKey] && Date.now() < keyCooldown[targetKey])
+      return true;
     let errText =
       typeof errObj === "string"
         ? errObj
@@ -1308,7 +1310,7 @@ function startWebcast(channel, proxy) {
       logWarn(
         `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Báo Master vứt bỏ Key này!`,
       );
-      keyCooldown[targetKey] = Date.now() + 60000;
+      keyCooldown[targetKey] = Date.now() + 5 * 60000;
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
@@ -1337,7 +1339,7 @@ function startWebcast(channel, proxy) {
             logWarn(
               `[❌] 🔑 EULER KEY ĐÃ CHÁY SẠCH QUOTA NGÀY (Còn 0 lượt): Báo Master đổi Key mới!`,
             );
-            keyCooldown[targetKey] = Date.now() + 60000;
+            keyCooldown[targetKey] = Date.now() + 5 * 60000;
             if (masterSocket?.connected)
               masterSocket.emit("worker_report_dead_key", {
                 key: targetKey,
@@ -1376,7 +1378,7 @@ function startWebcast(channel, proxy) {
       logWarn(
         `[❌] 🔑 KEY ĐÃ CHÁY SẠCH QUOTA (${libraryUsed}): Báo Master vứt bỏ!`,
       );
-      keyCooldown[targetKey] = Date.now() + 60000;
+      keyCooldown[targetKey] = Date.now() + 5 * 60000;
       if (masterSocket?.connected)
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
@@ -1449,7 +1451,11 @@ function startWebcast(channel, proxy) {
   // Chuẩn hóa Binding sự kiện cho 2 Thư viện
   if (libraryUsed === "tiktool") {
     conn.on("chest", catchTreasureBox);
-    conn.on("error", async (err) => await checkAndReportDeadKey(err, key));
+    conn.on("error", async (err) => {
+      await checkAndReportDeadKey(err, key);
+      // 💡 VÁ LỖI CỐT LÕI: Nếu Key đã chết, rút điện kết nối ngay để chặn thư viện reconnect ngầm
+      if (isDead) stopWebcast(channel.username);
+    });
     conn.on("disconnected", () => {
       stopWebcast(channel.username);
       safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
@@ -1461,7 +1467,10 @@ function startWebcast(channel, proxy) {
       if (u?.viewerCount) currentViewers = u.viewerCount;
     });
     conn.on("warn", async (err) => await checkAndReportDeadKey(err, key));
-    conn.on("error", async (err) => await checkAndReportDeadKey(err, key));
+    conn.on("error", async (err) => {
+      await checkAndReportDeadKey(err, key);
+      if (isDead) stopWebcast(channel.username);
+    });
     conn.on("streamEnd", () => {
       stopWebcast(channel.username);
       safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
