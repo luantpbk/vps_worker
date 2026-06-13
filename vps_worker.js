@@ -1586,6 +1586,7 @@ function stopWebcast(user) {
 }
 
 setInterval(() => {
+  const now = Date.now();
   // 1. Dọn kẹt check HTTP
   for (let [user, timestamp] of pendingChecks.entries()) {
     if (now - timestamp > 45000) {
