@@ -1,8 +1,8 @@
 .env
 node_modules
 TikTok-Live-Connector/
+vps_config.json
 check-bag.js
 check-euler.js
 scan-bag.js
 tiktool.mjs
-vps_config.json
