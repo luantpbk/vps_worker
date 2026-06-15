@@ -640,7 +640,9 @@ setInterval(async () => {
     if (actualSlots <= 0) return;
 
     const tasksToProcess = Math.min(actualSlots, localTaskQueue.length);
-    const delayStep = 2000 / Math.max(1, tasksToProcess);
+    // 💡 VÁ LỖI: Tăng delay check HTTP để tránh DDOS TikTok
+    // Giãn cách tối thiểu 1-2 giây giữa các nhịp check mới
+    const delayStep = Math.max(1500, 3000 / Math.max(1, tasksToProcess));
 
     for (let i = 0; i < tasksToProcess; i++) {
       const channel = localTaskQueue.splice(0, 1)[0];
@@ -650,7 +652,7 @@ setInterval(async () => {
         () => {
           executeTask(channel);
         },
-        i * delayStep + Math.floor(Math.random() * 300),
+        i * delayStep + Math.floor(Math.random() * 500),
       );
     }
   } finally {
