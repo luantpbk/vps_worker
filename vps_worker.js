@@ -188,6 +188,7 @@ function sendWorkerStatus() {
     let allPending = [
       ...Array.from(pendingChecks.keys()),
       ...localTaskQueue.map((c) => c.username),
+      ...socketConnectionQueue.map((item) => item.channel.username),
       ...Array.from(connectionLocks.keys()),
     ].filter((uname) => !activeNames.includes(uname));
     allPending = [...new Set(allPending)];
@@ -539,6 +540,7 @@ function connectToMaster() {
     workerPausedUntil = Infinity;
 
     localTaskQueue = [];
+    socketConnectionQueue = [];
     const runningUsers = Object.keys(activeConnections);
     runningUsers.forEach((user) => {
       safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
@@ -558,7 +560,8 @@ function connectToMaster() {
       !localTaskQueue.some((c) => c.username === channel.username) &&
       !pendingChecks.has(channel.username) &&
       !activeConnections[channel.username] &&
-      !connectionLocks.has(channel.username)
+      !connectionLocks.has(channel.username) &&
+      !socketConnectionQueue.some((item) => item.channel.username === channel.username)
     ) {
       localTaskQueue.push(channel);
     }
@@ -586,6 +589,7 @@ function connectToMaster() {
     else {
       disconnectTimer = setTimeout(() => {
         localTaskQueue = [];
+        socketConnectionQueue = [];
         for (let username in activeConnections) stopWebcast(username);
         activeConnections = {};
         assignedProxies = {};
@@ -613,7 +617,7 @@ setInterval(async () => {
   try {
     const currentActive = Object.keys(activeConnections).length;
     const totalIntendedLoad =
-      currentActive + pendingChecks.size;
+      currentActive + socketConnectionQueue.length + pendingChecks.size;
 
     if (
       totalIntendedLoad >= currentDynamicMaxLoad &&
@@ -799,9 +803,10 @@ setInterval(async () => {
       startWebcast(channel, proxy);
 
       // 💡 VÁ LỖI: Tốc độ cắm cho Proxy Direct (TLC)
-      // Thường giới hạn bởi số lượng Proxy, lấy mốc 1 giây cho mỗi nhịp cắm để an toàn
-      const dynamicDelay = 1000;
-      const jitter = Math.floor(Math.random() * 500);
+      // Thử thách của TikTok là cắm quá nhanh sẽ bị IP Ban. 
+      // Giới hạn mốc 1.5 giây cho mỗi nhịp cắm để cực kỳ an toàn.
+      const dynamicDelay = 1500;
+      const jitter = Math.floor(Math.random() * 800);
       await new Promise((r) => setTimeout(r, dynamicDelay + jitter));
     }
   } finally {
@@ -850,7 +855,7 @@ async function executeTask(channel) {
       return;
     }
     if (status === "LIVE") {
-      logInfo(`${channel.username} LIVE. Thực hiện cắm Socket`);
+      logInfo(`${channel.username} LIVE. Đưa vào hàng chờ cắm Socket`);
     }
 
     if (status === "NOT_FOUND" || status === "OFFLINE") {
@@ -919,6 +924,7 @@ async function executeTask(channel) {
       assignedProxies[channel.username] = socketProxy;
 
       connectionLocks.set(channel.username, Date.now());
+      // 💡 VÁ LỖI: Đưa vào hàng chờ thay vì gọi startWebcast trực tiếp
       socketConnectionQueue.push({ channel, proxy: socketProxy });
     }
   } catch (e) {
@@ -1257,7 +1263,7 @@ async function checkLocalGeo() {
     });
     if (res.data && res.data.countryCode) {
       proxyGeoData["local"] = res.data.countryCode;
-      logSuccess(`🌍 Đã xác định vị trí mạng Local: ${res.data.countryCode}`);
+      logSuccess(`🌍 Đã xác định vị vị trí mạng Local: ${res.data.countryCode}`);
     } else {
       proxyGeoData["local"] = "US";
     }
