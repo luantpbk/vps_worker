@@ -1101,6 +1101,9 @@ setInterval(async () => {
   try {
     const { channel, proxy } = eulerConnectionQueue.shift();
 
+    // 💡 VÁ LỖI: Nếu lúc chờ trong hàng đợi mà bị Garbage Collector 60s dọn mất khóa rồi thì bỏ qua luôn
+    if (!connectionLocks.has(channel.username)) return;
+
     if (!activeConnections[channel.username]) {
       if (globalConnectTokens <= 0) {
         eulerConnectionQueue.unshift({ channel, proxy });
@@ -1563,9 +1566,13 @@ function startWebcast(channel, proxy) {
     // 💡 VÁ LỖI CỰC KỲ QUAN TRỌNG: Requeue khi rớt mạng
     conn.on("error", async (err) => {
       const isDead = await checkAndReportDeadKey(err, key, conn.isCloudSocket);
-      stopWebcast(channel.username); // Rút điện ngay lập tức
-      // Nếu Key chưa chết (chỉ là rớt mây hoặc rớt proxy), báo Master vứt lại vào Queue để Worker cắm lại
-      if (!isDead) {
+      if (isDead) {
+        stopWebcast(channel.username);
+        return;
+      }
+
+      if (activeConnections[channel.username]) {
+        stopWebcast(channel.username);
         safeEmitRadarResult({ channel, status: "REQUEUE" });
       }
     });
@@ -1599,7 +1606,7 @@ function startWebcast(channel, proxy) {
         !activeConnections[channel.username]
       ) {
         logWarn(
-          `[GHOST SOCKET] Kênh ${channel.username} nối thành công nhưng quá hạn 60s. Rút ống thở ngay!`,
+          `[GHOST SOCKET] Kênh ${channel.username} nối thành công nhưng quá hạn 120s. Rút ống thở ngay!`,
         );
         clearTimeout(timeoutHandle);
         try {
