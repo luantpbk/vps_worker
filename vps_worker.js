@@ -850,7 +850,11 @@ function connectToMaster() {
     if (
       !localTaskQueue.some((c) => c.username === channel.username) &&
       !pendingChecks.has(channel.username) &&
-      !activeConnections[channel.username]
+      !activeConnections[channel.username] &&
+      !connectionLocks.has(channel.username) && // 💡 VÁ LỖI 1: Chặn kênh đang khởi tạo Socket
+      !eulerConnectionQueue.some(
+        (item) => item.channel.username === channel.username,
+      ) // 💡 VÁ LỖI 1: Chặn kênh đang xếp hàng chờ mây
     ) {
       localTaskQueue.push(channel);
     }
@@ -1171,6 +1175,16 @@ async function executeTask(channel) {
 
   try {
     const status = await checkLiveStatus(channel.username, checkProxy);
+    // ==========================================
+    // 💡 VÁ LỖI 2: CHỐNG CẮM ĐÚP DO HTTP LAG QUÁ 45 GIÂY
+    // Nếu bị hàm dọn rác xóa pendingChecks và báo REQUEUE rồi thì RÚT LUI ngay!
+    // ==========================================
+    if (!pendingChecks.has(channel.username)) {
+      logWarn(
+        `[GHOST HTTP] Kênh ${channel.username} check quá lâu và đã bị Requeue. Hủy lệnh cắm!`,
+      );
+      return;
+    }
     // Chỉ in log Info nếu kết quả là LIVE/OFFLINE/NOT_FOUND để tránh rác console
     if (status === "LIVE") {
       logInfo(`${channel.username} LIVE. Thực hiện cắm Socket`);
@@ -1764,6 +1778,24 @@ function startWebcast(channel, proxy) {
   }
   Promise.race([conn.connect(), timeoutPromise])
     .then((state) => {
+      // ==========================================
+      // 💡 VÁ LỖI 3: CHỐNG CẮM ĐÚP DO SOCKET LAG QUÁ 60 GIÂY
+      // Nếu đã bị dọn rác xóa connectionLocks, tuyệt đối không được giữ cái socket vừa nối thành công này!
+      // ==========================================
+      if (
+        !connectionLocks.has(channel.username) &&
+        !activeConnections[channel.username]
+      ) {
+        logWarn(
+          `[GHOST SOCKET] Kênh ${channel.username} nối thành công nhưng quá hạn 60s. Rút ống thở ngay!`,
+        );
+        clearTimeout(timeoutHandle);
+        try {
+          if (typeof conn.disconnect === "function") conn.disconnect();
+          if (conn.client?.ws) conn.client.ws.terminate();
+        } catch (e) {}
+        return;
+      }
       roomId =
         state?.roomInfo?.roomId ||
         state?.roomInfo?.room_id ||
