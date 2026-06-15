@@ -397,20 +397,30 @@ async function checkProxyHealth() {
   proxyHealth = currentHealth;
 
   // ========================================================
-  // 💡 TÍNH TOÁN LẠI TỔNG TẢI (MAX LOAD) NHƯ HÀM 1
+  // 💡 TÍNH TOÁN LẠI TỔNG TẢI (MAX LOAD) KẾT HỢP VỚI LƯỢNG KEY SỐNG
   // ========================================================
-  let aliveCount =
+  let aliveProxyLoad =
     config.useLocalNetwork && proxyHealth["local"]?.status === "SẴN SÀNG"
       ? config.localLoad || 0
       : 0;
 
   for (let p of dynamicProxies) {
     if (proxyHealth[p]?.status === "SẴN SÀNG") {
-      aliveCount += config.loadPerProxy || 0;
+      aliveProxyLoad += config.loadPerProxy || 0;
     }
   }
 
-  currentDynamicMaxLoad = aliveCount;
+  // 💡 LIÊN KẾT LUỒNG: Đếm số lượng Key đang khỏe mạnh (Không bị khóa)
+  const now = Date.now();
+  const validKeysCount = exclusiveEulerKeys.filter(
+    (k) => !keyCooldown[k] || now > keyCooldown[k],
+  ).length;
+
+  const safeLoad = config.loadPerProxy > 0 ? config.loadPerProxy : 15;
+  const maxLoadFromKeys = validKeysCount * EULER_PROXY_PER_KEY * safeLoad;
+
+  // Sức chứa thực tế là mức THẤP NHẤT giữa tài nguyên Proxy và tài nguyên Key
+  currentDynamicMaxLoad = Math.min(aliveProxyLoad, maxLoadFromKeys);
 
   if (masterSocket?.connected) {
     masterSocket.emit("worker_update_capacity", {
@@ -1043,7 +1053,15 @@ async function executeTask(channel) {
     pendingChecks.delete(channel.username);
     return;
   }
-
+  // 💡 CHẶN ĐỨNG TỪ CỬA: Nếu dàn Key đang đình công, từ chối check HTTP để tiết kiệm CPU!
+  const now = Date.now();
+  const hasValidKey =
+    exclusiveEulerKeys.length > 0 &&
+    exclusiveEulerKeys.some((k) => !keyCooldown[k] || now > keyCooldown[k]);
+  if (!hasValidKey) {
+    pendingChecks.delete(channel.username);
+    return safeEmitRadarResult({ channel, status: "REQUEUE" });
+  }
   // 💡 CHẶN ĐỨNG LỖI SPAM LOCAL
   let availableProxies = [];
   if (config.useLocalNetwork) {
@@ -1188,9 +1206,11 @@ function startWebcast(channel, proxy) {
       `⏳ Thiếu Euler Key cho kênh [${channel.username}]. Đang Rate Limit hoặc hết Key...`,
     );
     stopWebcast(channel.username);
+
+    // 💡 VÁ LỖI: Sửa 15000 thành 2000 để kênh không bị ngâm trong bộ nhớ vô ích
     setTimeout(() => {
       safeEmitRadarResult({ channel, status: "REQUEUE" });
-    }, 15000);
+    }, 5000);
     return;
   }
 
