@@ -1,2 +1,8 @@
 .env
 node_modules
+TikTok-Live-Connector/
+check-bag.js
+check-euler.js
+scan-bag.js
+tiktool.mjs
+vps_config.json
