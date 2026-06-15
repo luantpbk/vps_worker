@@ -10,12 +10,9 @@ const axios = require("axios");
 const { gotScraping } = require("got-scraping");
 const fs = require("fs");
 const EulerStreamApiClient = require("@eulerstream/euler-api-sdk").default;
-const WebSocket = require("ws");
-const EventEmitter = require("events");
 
 const CONFIG_FILE = "vps_config.json";
 const EULER_PROXY_PER_KEY = 3;
-const MAX_CLOUD_PER_KEY = 8;
 
 let config = {
   masterUrl: "http://localhost:3001",
@@ -168,8 +165,6 @@ let exclusiveEulerKeys = [];
 let exclusiveTiktoolKeys = [];
 let tiktoolKeyMap = new Map(); // Map lưu trữ 1 Proxy -> 1 Tiktool Key
 let eulerKeyMap = new Map(); // 💡 BỔ SUNG: Map lưu trữ 1 Proxy -> 1 Euler Key
-let keyCloudUsage = {};
-let cloudSlotHolders = {};
 
 const agentCache = {};
 let localTaskQueue = [];
@@ -1346,204 +1341,21 @@ function startWebcast(channel, proxy) {
       return;
     }
 
-    // ==========================================
-    // 💡 TÍNH TOÁN HYBRID CLOUD / DIRECT SOCKET (FIXED RACE CONDITION)
-    // ==========================================
-    const currentCloudUsage = keyCloudUsage[key] || 0;
-    useCloudSocket = currentCloudUsage < MAX_CLOUD_PER_KEY;
-
-    if (useCloudSocket) {
-      keyCloudUsage[key] = currentCloudUsage + 1; // Chiếm slot ngay lập tức
-      cloudSlotHolders[channel.username] = key;
-
-      // ==========================================
-      // ☁️ NHÁNH CLOUD SOCKET (SILENT RECONNECT & HEARTBEAT)
-      // ==========================================
-
-      const cleanUniqueId = channel.username.startsWith("@")
-        ? channel.username.slice(1)
-        : channel.username;
-      const wsUrl = `wss://ws.eulerstream.com/?uniqueId=${cleanUniqueId}&apiKey=${key}`;
-
-      const wsOptions = {};
-      if (proxy !== "local") {
-        wsOptions.agent = getCachedAgent(proxy);
-      }
-
-      conn = new EventEmitter();
-      conn.isCloudSocket = true;
-
-      let wsClient = null;
-      let pingInterval = null;
-      let isIntentionallyClosed = false;
-
-      conn.disconnect = () => {
-        isIntentionallyClosed = true;
-        clearInterval(pingInterval);
-        if (wsClient) wsClient.close(1000);
-      };
-
-      conn.connect = () =>
-        new Promise((resolve, reject) => {
-          let isFirstConnect = true;
-
-          const connectCloud = () => {
-            if (isIntentionallyClosed) return;
-
-            // 💡 LOG: Bắt đầu quá trình cắm
-            logInfo(
-              `[☁️ DEBUG] Kênh ${channel.username} - Bắt đầu gọi WS tới Euler...`,
-            );
-
-            wsClient = new WebSocket(wsUrl, wsOptions);
-            conn.client = { ws: wsClient };
-
-            let isAlive = true;
-            wsClient.on("pong", () => {
-              isAlive = true;
-            });
-
-            clearInterval(pingInterval);
-            pingInterval = setInterval(() => {
-              if (wsClient.readyState === WebSocket.OPEN) {
-                if (!isAlive) {
-                  logWarn(
-                    `[☁️ DEBUG] Kênh ${channel.username} - Euler không trả lời PING. Ép cắt!`,
-                  );
-                  wsClient.terminate();
-                  return;
-                }
-                isAlive = false;
-                wsClient.ping();
-              }
-            }, 15000);
-
-            let connectionTimeout = null;
-            if (isFirstConnect) {
-              connectionTimeout = setTimeout(
-                () => reject(new Error("CLOUD_TIMEOUT")),
-                15000,
-              );
-            }
-
-            // 💡 LOG: Bắt lỗi HTTP Handshake (Rất hay gặp khi dùng Proxy hoặc sai Key)
-            wsClient.on("unexpected-response", (request, response) => {
-              logError(
-                `[☁️ DEBUG HTTP LỖI] Kênh ${channel.username} bị Euler từ chối ở bước Handshake. HTTP Status: ${response.statusCode}`,
-              );
-              if (isFirstConnect && connectionTimeout)
-                clearTimeout(connectionTimeout);
-              // Ép reject kèm mã lỗi để hàm checkAndReportDeadKey bên ngoài bắt được
-              reject(new Error(`UNEXPECTED_HTTP_${response.statusCode}`));
-            });
-
-            wsClient.on("open", () => {
-              if (connectionTimeout) clearTimeout(connectionTimeout);
-              if (isFirstConnect) {
-                isFirstConnect = false;
-                logSuccess(
-                  `[☁️ DEBUG] Kênh ${channel.username} - WebSocket Mở THÀNH CÔNG!`,
-                );
-                resolve({ roomInfo: { roomId: "cloud_" + cleanUniqueId } });
-              } else {
-                logSuccess(
-                  `[☁️ RECONNECT] Kênh ${channel.username} đã tự động nối lại mây thành công!`,
-                );
-              }
-            });
-
-            wsClient.on("message", (data) => {
-              try {
-                const payload = JSON.parse(data.toString("utf8"));
-
-                for (const msg of payload.messages || []) {
-                  let eventName = msg.type;
-                  let eventData = msg.data;
-
-                  if (eventName === "WebcastEnvelopeMessage")
-                    eventName = "envelope";
-                  else if (eventName === "WebcastTreasureBoxMessage")
-                    eventName = "treasureBox";
-                  else if (eventName === "WebcastRoomUserSeqMessage")
-                    eventName = "roomUser";
-                  else if (eventName === "WebcastControlMessage")
-                    eventName = "streamEnd";
-
-                  if (eventName && eventData) {
-                    conn.emit(eventName, eventData);
-                  }
-                }
-              } catch (e) {
-                logError(
-                  `[☁️ DEBUG PARSE] Lỗi giải mã JSON từ Euler: ${e.message}`,
-                );
-              }
-            });
-
-            wsClient.on("close", (code, reason) => {
-              clearInterval(pingInterval);
-              if (isIntentionallyClosed) return;
-
-              const reasonStr = reason ? reason.toString() : "Không rõ";
-
-              if (code === 1000 || code === 4005 || code === 4404) {
-                logInfo(
-                  `[☁️ DEBUG ĐÓNG] Kênh ${channel.username} đóng hợp lệ (Code: ${code}, Lý do: ${reasonStr})`,
-                );
-                conn.emit("disconnected");
-              } else if (code >= 4000) {
-                if (isFirstConnect && connectionTimeout)
-                  clearTimeout(connectionTimeout);
-                logWarn(
-                  `[☁️ EULER TỪ CHỐI] Kênh ${channel.username} bị đá (Mã: ${code}, Lý do: ${reasonStr}). Rút điện mây!`,
-                );
-                conn.emit("error", new Error(`EULER_WS_ERROR_${code}`));
-              } else {
-                if (!isFirstConnect) {
-                  logWarn(
-                    `[☁️ RỚT MẠNG] Kênh ${channel.username} đứt mạng vật lý (Mã: ${code}, Lý do: ${reasonStr}). Nối lại sau 3s...`,
-                  );
-                  setTimeout(connectCloud, 3000);
-                } else {
-                  logError(
-                    `[☁️ DEBUG LỖI ĐẦU VÀO] Kênh ${channel.username} ngắt kết nối ngay khi vừa cắm (Mã: ${code})`,
-                  );
-                  if (connectionTimeout) clearTimeout(connectionTimeout);
-                  reject(new Error(`CLOUD_CLOSED_EARLY_CODE_${code}`));
-                }
-              }
-            });
-
-            wsClient.on("error", (err) => {
-              logError(
-                `[☁️ DEBUG RAW ERROR] Kênh ${channel.username} văng lỗi: ${err.message}`,
-              );
-              if (isFirstConnect) {
-                if (connectionTimeout) clearTimeout(connectionTimeout);
-                reject(err);
-              }
-            });
-          };
-
-          connectCloud();
-        });
-    } else {
-      // Khối else của Direct Socket...
-      const eulerOptions = {
-        signApiKey: key,
-        webClientOptions: { httpsAgent: getCachedAgent(proxy) },
-        websocketOptions: { agent: getCachedAgent(proxy) },
-        processInitialData: true,
-        fetchRoomInfoOnConnect: true,
-        clientParams: {
-          browser_language: `${geo.lang}-${geo.region}`,
-          app_language: geo.lang,
-          webcast_language: geo.lang,
-          region: geo.region,
-        },
-      };
-      conn = new TikTokLiveConnection(channel.username, eulerOptions);
-    }
+    // Khối else của Direct Socket...
+    const eulerOptions = {
+      signApiKey: key,
+      webClientOptions: { httpsAgent: getCachedAgent(proxy) },
+      websocketOptions: { agent: getCachedAgent(proxy) },
+      processInitialData: true,
+      fetchRoomInfoOnConnect: true,
+      clientParams: {
+        browser_language: `${geo.lang}-${geo.region}`,
+        app_language: geo.lang,
+        webcast_language: geo.lang,
+        region: geo.region,
+      },
+    };
+    conn = new TikTokLiveConnection(channel.username, eulerOptions);
   }
 
   const checkAndReportDeadKey = async (errObj, targetKey, isCloud = false) => {
@@ -1902,20 +1714,6 @@ function stopWebcast(user) {
   pendingChecks.delete(user);
   connectionLocks.delete(user); // 💡 Rút khóa chống đúp
 
-  // ==========================================
-  // 💡 VÁ LỖI TỐI THƯỢNG: CHỈ XẢ MÂY 1 LẦN DUY NHẤT
-  // ==========================================
-  const heldKey = cloudSlotHolders[user];
-  if (heldKey) {
-    keyCloudUsage[heldKey] = Math.max(0, (keyCloudUsage[heldKey] || 0) - 1);
-    delete cloudSlotHolders[user];
-
-    // In log để bạn giám sát số slot Cloud theo thời gian thực
-    logInfo(
-      `☁️ Đã nhả 1 slot Cloud. Đang dùng: ${keyCloudUsage[heldKey]}/${MAX_CLOUD_PER_KEY}`,
-    );
-  }
-
   // 2. Dọn dẹp Connection
   const conn = activeConnections[user];
   if (!conn) return;
@@ -1977,9 +1775,9 @@ setInterval(() => {
   for (let user in activeConnections) {
     const conn = activeConnections[user];
 
-    if (now - (conn.lastActive || now) > 60 * 60 * 1000) {
+    if (now - (conn.lastActive || now) > 90 * 60 * 1000) {
       logWarn(
-        `✂️ Cắt bỏ Socket Zombie [${user}] do 60 phút không có tín hiệu quà.`,
+        `✂️ Cắt bỏ Socket Zombie [${user}] do 90 phút không có tín hiệu quà.`,
       );
       stopWebcast(user);
       safeEmitRadarResult({
