@@ -898,7 +898,16 @@ async function checkLiveStatus(username, proxy) {
       // 💡 LỚP GIÁP 1: Ép timeout cứng 15s phòng trường hợp thư viện got bị treo ngầm
       let timeoutHandle;
       const hardTimeout = new Promise((_, r) => {
-        timeoutHandle = setTimeout(() => r(new Error("HARD_TIMEOUT")), 15000);
+        timeoutHandle = setTimeout(() => {
+          // ==========================================
+          // 💡 VÁ LỖI RÒ RỈ 2: CẮT ĐỨT KẾT NỐI TCP
+          // Nếu gotScraping bị treo, ép hủy Promise để trả lại tài nguyên mạng
+          // ==========================================
+          if (typeof fetchPromise.cancel === "function") {
+            fetchPromise.cancel();
+          }
+          r(new Error("HARD_TIMEOUT"));
+        }, 20000);
       });
 
       const res = await Promise.race([fetchPromise, hardTimeout]);
@@ -1436,7 +1445,7 @@ function startWebcast(channel, proxy) {
 
   let timeoutHandle;
   const timeoutPromise = new Promise((_, r) => {
-    timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 30000);
+    timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000);
   });
 
   consumeEulerRequest(key); // 💡 Kích hoạt ghi nhận lượt dùng cho Euler Key
@@ -1489,6 +1498,15 @@ function startWebcast(channel, proxy) {
     })
     .catch(async (err) => {
       clearTimeout(timeoutHandle);
+      try {
+        if (typeof conn.removeAllListeners === "function")
+          conn.removeAllListeners();
+        if (typeof conn.disconnect === "function") conn.disconnect();
+        if (conn.client?.ws && typeof conn.client.ws.terminate === "function") {
+          conn.client.ws.terminate();
+        }
+      } catch (e) {}
+
       const isKeyDead = await checkAndReportDeadKey(err, key);
       let errMsg = String(err?.message || err).toLowerCase();
 
