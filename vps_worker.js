@@ -105,7 +105,9 @@ let proxyFailCount = {};
 let proxyCooldown = {};
 let proxyStrikeCount = {};
 let proxyHealth = {};
+let apiCheckCache = new Map();
 let keyCooldown = {};
+let keyStrikeCount = {};
 
 const EULER_REQUESTS_PER_MINUTE = 12; // An toàn: Tối đa 12 kết nối/phút cho 1 Euler Key
 let eulerRateLimiter = {};
@@ -269,6 +271,36 @@ setInterval(
   2 * 60 * 1000,
 );
 
+// 💡 HÀM MỚI: Tính toán và báo cáo sức chứa ngay lập tức (Real-time Capacity)
+function updateDynamicCapacity() {
+  let aliveProxyLoad =
+    config.useLocalNetwork && proxyHealth["local"]?.status === "SẴN SÀNG"
+      ? config.localLoad || 0
+      : 0;
+  for (let p of dynamicProxies) {
+    if (proxyHealth[p]?.status === "SẴN SÀNG")
+      aliveProxyLoad += config.loadPerProxy || 0;
+  }
+
+  const now = Date.now();
+  const validKeysCount = exclusiveEulerKeys.filter(
+    (k) => !keyCooldown[k] || now > keyCooldown[k],
+  ).length;
+  const safeLoad = config.loadPerProxy > 0 ? config.loadPerProxy : 15;
+  const maxLoadFromKeys = validKeysCount * EULER_PROXY_PER_KEY * safeLoad;
+
+  const newMaxLoad = Math.min(aliveProxyLoad, maxLoadFromKeys);
+
+  if (newMaxLoad !== currentDynamicMaxLoad) {
+    currentDynamicMaxLoad = newMaxLoad;
+    if (masterSocket?.connected) {
+      masterSocket.emit("worker_update_capacity", {
+        maxLoad: currentDynamicMaxLoad,
+      });
+    }
+  }
+}
+
 async function checkProxyHealth() {
   let checkList = [...dynamicProxies];
   if (config.useLocalNetwork) checkList.unshift("local");
@@ -396,39 +428,9 @@ async function checkProxyHealth() {
   // Cập nhật lại kho máu chung
   proxyHealth = currentHealth;
 
-  // ========================================================
-  // 💡 TÍNH TOÁN LẠI TỔNG TẢI (MAX LOAD) KẾT HỢP VỚI LƯỢNG KEY SỐNG
-  // ========================================================
-  let aliveProxyLoad =
-    config.useLocalNetwork && proxyHealth["local"]?.status === "SẴN SÀNG"
-      ? config.localLoad || 0
-      : 0;
-
-  for (let p of dynamicProxies) {
-    if (proxyHealth[p]?.status === "SẴN SÀNG") {
-      aliveProxyLoad += config.loadPerProxy || 0;
-    }
-  }
-
-  // 💡 LIÊN KẾT LUỒNG: Đếm số lượng Key đang khỏe mạnh (Không bị khóa)
-  const now = Date.now();
-  const validKeysCount = exclusiveEulerKeys.filter(
-    (k) => !keyCooldown[k] || now > keyCooldown[k],
-  ).length;
-
-  const safeLoad = config.loadPerProxy > 0 ? config.loadPerProxy : 15;
-  const maxLoadFromKeys = validKeysCount * EULER_PROXY_PER_KEY * safeLoad;
-
-  // Sức chứa thực tế là mức THẤP NHẤT giữa tài nguyên Proxy và tài nguyên Key
-  currentDynamicMaxLoad = Math.min(aliveProxyLoad, maxLoadFromKeys);
-
-  if (masterSocket?.connected) {
-    masterSocket.emit("worker_update_capacity", {
-      maxLoad: currentDynamicMaxLoad,
-    });
-  }
+  updateDynamicCapacity();
 }
-setInterval(checkProxyHealth, 45000);
+setInterval(checkProxyHealth, 180000);
 setTimeout(checkProxyHealth, 2000);
 
 function getNextAvailableProxy() {
@@ -669,6 +671,12 @@ function connectToMaster() {
     for (let [p, k] of eulerKeyMap.entries()) {
       if (k === data.deadKey) eulerKeyMap.delete(p);
     }
+    // ==========================================
+    // 💡 VÁ LỖI MEMORY LEAK: Dọn sạch mọi tàn dư của Key chết
+    // ==========================================
+    delete keyStrikeCount[data.deadKey];
+    delete keyCooldown[data.deadKey];
+    delete eulerRateLimiter[data.deadKey]; // Xóa luôn mảng đếm Request
   });
 
   masterSocket.on("worker_receive_proxies", (assignedProxiesArr) => {
@@ -737,15 +745,18 @@ function connectToMaster() {
     // 1. Xóa sạch hàng đợi chưa kịp check
     localTaskQueue = [];
     eulerConnectionQueue = [];
-    // 2. Ép ngắt kết nối (Rút ống thở) TOÀN BỘ các kênh đang LIVE
-    const runningUsers = Object.keys(activeConnections);
-    runningUsers.forEach((user) => {
+    // 💡 VÁ LỖI CẤP KIẾN TRÚC 2: Rút điện TẤT CẢ các kênh đang giữ Proxy (Cả đang Live và Đang Queue)
+    const usersToClean = new Set([
+      ...Object.keys(activeConnections),
+      ...connectionLocks.keys(),
+      ...Object.keys(assignedProxies),
+    ]);
+
+    usersToClean.forEach((user) => {
       safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
       stopWebcast(user);
     });
 
-    // 3. Xóa các khóa check
-    pendingChecks.clear();
     connectionLocks.clear();
   });
 
@@ -799,7 +810,13 @@ function connectToMaster() {
       disconnectTimer = setTimeout(() => {
         localTaskQueue = [];
         eulerConnectionQueue = [];
-        for (let username in activeConnections) stopWebcast(username);
+        // 💡 VÁ LỖI: Dọn sạch mọi vết tích có giữ Proxy
+        const usersToClean = new Set([
+          ...Object.keys(activeConnections),
+          ...connectionLocks.keys(),
+          ...Object.keys(assignedProxies),
+        ]);
+        usersToClean.forEach((user) => stopWebcast(user));
         activeConnections = {};
         assignedProxies = {};
         pendingChecks.clear();
@@ -1023,8 +1040,11 @@ setInterval(async () => {
   try {
     const { channel, proxy } = eulerConnectionQueue.shift();
 
-    // 💡 VÁ LỖI: Nếu lúc chờ trong hàng đợi mà bị Garbage Collector 60s dọn mất khóa rồi thì bỏ qua luôn
-    if (!connectionLocks.has(channel.username)) return;
+    // 💡 VÁ LỖI CẤP KIẾN TRÚC 1: Nếu mất khóa, phải gọi stopWebcast để TRẢ LẠI PROXY đã gán
+    if (!connectionLocks.has(channel.username)) {
+      stopWebcast(channel.username);
+      return;
+    }
 
     if (!activeConnections[channel.username]) {
       if (globalConnectTokens <= 0) {
@@ -1069,7 +1089,8 @@ async function executeTask(channel) {
     exclusiveEulerKeys.some((k) => !keyCooldown[k] || now > keyCooldown[k]);
   if (!hasValidKey) {
     pendingChecks.delete(channel.username);
-    return safeEmitRadarResult({ channel, status: "REQUEUE" });
+    updateDynamicCapacity();
+    return safeEmitRadarResult({ channel, status: "SYSTEM_BUSY" });
   }
   // 💡 CHẶN ĐỨNG LỖI SPAM LOCAL
   let availableProxies = [];
@@ -1089,7 +1110,7 @@ async function executeTask(channel) {
 
   if (availableProxies.length === 0) {
     pendingChecks.delete(channel.username);
-    return safeEmitRadarResult({ channel, status: "REQUEUE" });
+    return safeEmitRadarResult({ channel, status: "SYSTEM_BUSY" });
   }
 
   const checkProxy =
@@ -1215,10 +1236,10 @@ function startWebcast(channel, proxy) {
       `⏳ Thiếu Euler Key cho kênh [${channel.username}]. Đang Rate Limit hoặc hết Key...`,
     );
     stopWebcast(channel.username);
-
+    updateDynamicCapacity(); // 💡 Cập nhật sức chứa
     // 💡 VÁ LỖI: Sửa 15000 thành 2000 để kênh không bị ngâm trong bộ nhớ vô ích
     setTimeout(() => {
-      safeEmitRadarResult({ channel, status: "REQUEUE" });
+      safeEmitRadarResult({ channel, status: "SYSTEM_BUSY" });
     }, 5000);
     return;
   }
@@ -1277,6 +1298,20 @@ function startWebcast(channel, proxy) {
       msg.includes("403") ||
       msg.includes("401")
     ) {
+      const cacheKey = `quota_${targetKey}`;
+      const now = Date.now();
+
+      // 💡 NẾU ĐÃ CHECK TRONG 60S QUA, BỎ QUA GỌI API!
+      if (
+        apiCheckCache.has(cacheKey) &&
+        now - apiCheckCache.get(cacheKey) < 60000
+      ) {
+        logWarn(
+          `[⚠️] Đang chờ 60s để check lại Quota cho Key này nhằm tránh Ban IP...`,
+        );
+        return true; // Tạm khóa chờ nhịp sau
+      }
+      apiCheckCache.set(cacheKey, now); // Ghi nhớ thời điểm check
       try {
         const eulerClient = new EulerStreamApiClient({ apiKey: targetKey });
 
@@ -1298,11 +1333,49 @@ function startWebcast(channel, proxy) {
               });
             return true;
           } else {
-            logWarn(
-              `[🛑] EULER KEY CÒN QUOTA (${remaining} lượt) NHƯNG BỊ BLOCK SPAM: Cho Key ngủ 15 phút!`,
-            );
-            keyCooldown[targetKey] = Date.now() + 900000; // Khóa 15 phút
-            return true;
+            // ==========================================
+            // 💡 VÁ LỖI CẤP KIẾN TRÚC: XỬ LÝ LỖI "SỐNG THỰC VẬT"
+            // ==========================================
+            keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
+
+            if (keyStrikeCount[targetKey] >= 5) {
+              logWarn(
+                `[❌] 🔑 EULER KEY CÒN QUOTA (${remaining}) NHƯNG LỖI MẠNG 5 LẦN LIÊN TIẾP: Ép Master đổi Key mới!`,
+              );
+              keyCooldown[targetKey] = Date.now() + 5 * 60000; // Phạt nó để nó không chạy nữa
+              if (masterSocket?.connected)
+                masterSocket.emit("worker_report_dead_key", {
+                  key: targetKey,
+                  workerName: config.workerName,
+                  library: libraryUsed,
+                });
+              return true;
+            } else {
+              // ==========================================
+              // 💡 VÁ LỖI CẤP KIẾN TRÚC: XỬ LÝ LỖI "SỐNG THỰC VẬT"
+              // ==========================================
+              keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
+
+              if (keyStrikeCount[targetKey] >= 5) {
+                logWarn(
+                  `[❌] 🔑 EULER KEY CÒN QUOTA (${remaining}) NHƯNG LỖI MẠNG 5 LẦN LIÊN TIẾP: Ép Master đổi Key mới!`,
+                );
+                keyCooldown[targetKey] = Date.now() + 5 * 60000; // Phạt nó để nó không chạy nữa
+                if (masterSocket?.connected)
+                  masterSocket.emit("worker_report_dead_key", {
+                    key: targetKey,
+                    workerName: config.workerName,
+                    library: libraryUsed,
+                  });
+                return true;
+              } else {
+                logWarn(
+                  `[🛑] EULER KEY CÒN QUOTA (${remaining}) NHƯNG BỊ BLOCK SPAM (Lần ${keyStrikeCount[targetKey]}/5): Cho Key ngủ 15 phút!`,
+                );
+                keyCooldown[targetKey] = Date.now() + 900000; // Khóa 15 phút
+                return true;
+              }
+            }
           }
         }
       } catch (apiErr) {
@@ -1346,10 +1419,30 @@ function startWebcast(channel, proxy) {
       return true;
     }
 
-    if (isOverloadedKey) {
-      logWarn(`[⚠️] ⏳ KEY CẮM QUÁ NHANH (${libraryUsed}): ${msg}`);
-      keyCooldown[targetKey] = Date.now() + 15000; // Khóa 15 giây
-      return true;
+    // 💡 ÁP DỤNG ĐẾM GẬY CHO CÁC LỖI TẠM THỜI
+    if (isExhaustedKey || isOverloadedKey) {
+      keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
+
+      if (keyStrikeCount[targetKey] >= 5) {
+        logWarn(
+          `[❌] 🔑 KEY LỖI RATE LIMIT QUÁ 5 LẦN (${libraryUsed}): Ép Master vứt bỏ!`,
+        );
+        keyCooldown[targetKey] = Date.now() + 5 * 60000;
+        if (masterSocket?.connected)
+          masterSocket.emit("worker_report_dead_key", {
+            key: targetKey,
+            workerName: config.workerName,
+            library: libraryUsed,
+          });
+        return true;
+      } else {
+        const sleepTime = isExhaustedKey ? 900000 : 15000; // Hết giờ ngủ 15 phút, Overload ngủ 15 giây
+        logWarn(
+          `[🛑] ⏳ KEY CẮM QUÁ NHANH (${libraryUsed}) - Lần ${keyStrikeCount[targetKey]}/5: Cho nghỉ ngơi!`,
+        );
+        keyCooldown[targetKey] = Date.now() + sleepTime;
+        return true;
+      }
     }
     return false;
   };
@@ -1486,7 +1579,10 @@ function startWebcast(channel, proxy) {
 
       // 💡 ĐÃ SỬA: Đọc cờ trực tiếp từ đối tượng conn
       activeConnections[channel.username].usedKey = key;
-
+      // ==========================================
+      // 💡 RỬA TỘI: KHI KEY HOẠT ĐỘNG TỐT, XÓA MỌI ÁN PHẠT
+      // ==========================================
+      delete keyStrikeCount[key];
       proxyStrikeCount[proxy] = 0;
       logSuccess(
         `✅ [${channel.username}] Kết nối thành công qua (${getShortProxy(proxy)})`,
@@ -1630,11 +1726,35 @@ setInterval(() => {
       stopWebcast(user);
       safeEmitRadarResult({
         channel: { username: user },
-        status: "OFFLINE",
+        status: "COOLDOWN",
         proxy: assignedProxies[user],
       });
     }
   }
+
+  // 4. [MỚI] TỰ ĐỘNG SỬA LỖI RÒ RỈ PROXY (Auto-Healing Memory Leak)
+  // Nếu một kênh lọt ra ngoài sự quản lý (Không có socket, không có khóa) nhưng vẫn chiếm Proxy -> Thu hồi!
+  for (let user in assignedProxies) {
+    if (!activeConnections[user] && !connectionLocks.has(user)) {
+      logWarn(
+        `[MEM LEAK] Phát hiện kênh ${user} bốc hơi nhưng vẫn chiếm Proxy. Tự động giải phóng!`,
+      );
+      stopWebcast(user);
+    }
+  }
+
+  // 5. [MỚI] TÁI THIẾT LẬP SINGLE SOURCE OF TRUTH CHO PROXY USAGE
+  // Quét lại toàn bộ assignedProxies để tính ra Tải Thực Tế (Triệt tiêu sai số do Race Condition)
+  const realUsage = {};
+  if (config.useLocalNetwork) realUsage["local"] = 0;
+  for (let p of dynamicProxies) realUsage[p] = 0;
+
+  for (let user in assignedProxies) {
+    const p = assignedProxies[user];
+    realUsage[p] = (realUsage[p] || 0) + 1;
+  }
+
+  proxyUsage = realUsage; // Ghi đè toàn bộ số ảo bằng số thực!
 }, 30000);
 
 // ========================================================
@@ -1697,6 +1817,12 @@ function balanceResources() {
         for (let [p, k] of eulerKeyMap.entries()) {
           if (k === deadKey) eulerKeyMap.delete(p);
         }
+        // ==========================================
+        // 💡 VÁ LỖI MEMORY LEAK: Rửa sạch bộ nhớ đệm
+        // ==========================================
+        delete keyStrikeCount[deadKey];
+        delete keyCooldown[deadKey];
+        delete eulerRateLimiter[deadKey];
         // 2. 💡 RÚT ĐIỆN LUỒNG ĐANG SỬ DỤNG
         for (let user in activeConnections) {
           if (
