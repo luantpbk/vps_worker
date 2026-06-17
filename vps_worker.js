@@ -1330,31 +1330,6 @@ function startWebcast(channel, proxy) {
       return true;
     }
 
-    // ==========================================
-    // 💡 HỆ THỐNG GIẢM XÓC LỖI 500/502/504 TỪ EULER / CLOUDFLARE
-    // ==========================================
-    if (
-      msg.includes("500") ||
-      msg.includes("502") ||
-      msg.includes("504") ||
-      msg.includes("unexpected sign server status")
-    ) {
-      // 💡 NÂNG CẤP: Bắt thẻ "retry_after" của Cloudflare nếu có
-      let penalty = 4000; // Mặc định 4 giây
-      const retryMatch = msg.match(/"retry_after"\s*:\s*(\d+)/);
-      if (retryMatch && retryMatch[1]) {
-        penalty = parseInt(retryMatch[1], 10) * 1000;
-      }
-
-      logWarn(
-        `[☁️] Máy chủ Euler quá tải (50x). Cho Key nghỉ ${penalty / 1000}s...`,
-      );
-      keyCooldown[targetKey] = Date.now() + penalty;
-
-      // 💡 Trả về cờ hiệu đặc biệt thay vì 'true'
-      return true;
-    }
-
     // 2. CHECK TRỰC TIẾP TỪ MÁY CHỦ EULER (Nếu có dấu hiệu Rate Limit)
     if (
       msg.includes("rate limit") ||
@@ -1365,7 +1340,11 @@ function startWebcast(channel, proxy) {
       msg.includes("rate_limit_") ||
       msg.includes("429") ||
       msg.includes("403") ||
-      msg.includes("401")
+      msg.includes("401") ||
+      msg.includes("500") ||
+      msg.includes("502") ||
+      msg.includes("504") ||
+      msg.includes("unexpected sign server status")
     ) {
       const cacheKey = `quota_${targetKey}`;
       const now = Date.now();
