@@ -1330,18 +1330,29 @@ function startWebcast(channel, proxy) {
       return true;
     }
 
-    // 💡 BỔ SUNG KHỐI NÀY: Bắt lỗi 500/502 từ phía máy chủ Euler
+    // ==========================================
+    // 💡 HỆ THỐNG GIẢM XÓC LỖI 500/502/504 TỪ EULER / CLOUDFLARE
+    // ==========================================
     if (
       msg.includes("500") ||
-      msg.includes("502 error") ||
+      msg.includes("502") ||
+      msg.includes("504") ||
       msg.includes("unexpected sign server status")
     ) {
+      // 💡 NÂNG CẤP: Bắt thẻ "retry_after" của Cloudflare nếu có
+      let penalty = 4000; // Mặc định 4 giây
+      const retryMatch = msg.match(/"retry_after"\s*:\s*(\d+)/);
+      if (retryMatch && retryMatch[1]) {
+        penalty = parseInt(retryMatch[1], 10) * 1000;
+      }
+
       logWarn(
-        `[☁️] Máy chủ Euler tạm thời mất kết nối với TikTok (500/502). Nhường tải sang nhịp sau...`,
+        `[☁️] Máy chủ Euler quá tải (50x). Cho Key nghỉ ${penalty / 1000}s...`,
       );
-      // Không cần phạt Key hay phạt Proxy, chỉ cho Key nghỉ 10 giây rồi chạy tiếp
-      keyCooldown[targetKey] = Date.now() + 10000;
-      return true; // Ép ngắt kết nối an toàn, trả kênh về Queue
+      keyCooldown[targetKey] = Date.now() + penalty;
+
+      // 💡 Trả về cờ hiệu đặc biệt thay vì 'true'
+      return true;
     }
 
     // 2. CHECK TRỰC TIẾP TỪ MÁY CHỦ EULER (Nếu có dấu hiệu Rate Limit)
