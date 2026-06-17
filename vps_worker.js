@@ -1025,8 +1025,8 @@ async function checkLiveStatus(username, proxy) {
 // ========================================================
 let eulerConnectionQueue = [];
 let isConnectingEuler = false;
-
-setInterval(async () => {
+setInterval(() => {
+  // Bỏ async vì không cần await bên trong
   if (
     isConnectingEuler ||
     eulerConnectionQueue.length === 0 ||
@@ -1034,45 +1034,52 @@ setInterval(async () => {
   )
     return;
 
-  isConnectingEuler = true;
+  isConnectingEuler = true; // 🔒 KHÓA LUỒNG
   try {
-    const { channel, proxy } = eulerConnectionQueue.shift();
+    // 1. Chỉ Nhìn (Peek) chứ chưa Rút vội
+    const item = eulerConnectionQueue[0];
+    const { channel, proxy } = item;
 
-    // 💡 VÁ LỖI CẤP KIẾN TRÚC 1: Nếu mất khóa, phải gọi stopWebcast để TRẢ LẠI PROXY đã gán
+    // 2. Kiểm tra các điều kiện loại trừ sớm
     if (!connectionLocks.has(channel.username)) {
+      eulerConnectionQueue.shift(); // Dọn rác
       stopWebcast(channel.username);
+      isConnectingEuler = false; // 🔓 MỞ KHÓA
       return;
     }
 
-    if (!activeConnections[channel.username]) {
-      if (globalConnectTokens <= 0) {
-        eulerConnectionQueue.unshift({ channel, proxy });
-        return;
-      }
-
-      globalConnectTokens--;
-      startWebcast(channel, proxy);
-
-      // 💡 VÁ LỖI TỈ LỆ: Tính toán tốc độ cắm dựa trên SỐ LƯỢNG KEY thực tế
-      let dynamicDelay = 2000;
-      let activeKeys = 1;
-
-      // Euler (TLC) (Tỉ lệ 1 Key : 3 Proxy)
-      // 1 Key phải gánh nhiều kết nối hơn, lấy mốc an toàn là 5 giây hồi chiêu cho 1 Key
-      activeKeys = Math.max(1, exclusiveEulerKeys.length);
-      dynamicDelay = Math.max(500, 5000 / activeKeys);
-
-      // Thêm độ nhiễu ngẫu nhiên (Jitter) từ 0-500ms để vượt qua các bộ lọc Bot tĩnh
-      const jitter = Math.floor(Math.random() * 500);
-      const totalDelay = Math.round(dynamicDelay + jitter);
-      setTimeout(() => {
-        isConnectingEuler = false;
-      }, totalDelay);
-      return; // Kết thúc sớm, không chạy xuống finally nữa
+    if (activeConnections[channel.username]) {
+      eulerConnectionQueue.shift(); // Dọn rác
+      isConnectingEuler = false; // 🔓 MỞ KHÓA
+      return;
     }
+
+    // 3. Chờ Token mạng
+    if (globalConnectTokens <= 0) {
+      isConnectingEuler = false; // 🔓 MỞ KHÓA (Giữ nguyên kênh trong Queue để chờ nhịp sau)
+      return;
+    }
+
+    // 4. MỌI THỨ HỢP LỆ -> Bắt đầu xử lý
+    eulerConnectionQueue.shift(); // Chính thức rút kênh ra
+    globalConnectTokens--;
+    startWebcast(channel, proxy);
+
+    // 5. Tính toán thời gian nghỉ ngơi giữa các lần cắm
+    let activeKeys = Math.max(1, exclusiveEulerKeys.length);
+    let dynamicDelay = Math.max(500, 5000 / activeKeys);
+    const jitter = Math.floor(Math.random() * 500);
+    const totalDelay = Math.round(dynamicDelay + jitter);
+
+    // 6. Mở khóa từ từ sau khi trễ
+    setTimeout(() => {
+      isConnectingEuler = false; // 🔓 MỞ KHÓA SAU DELAY
+    }, totalDelay);
   } catch (err) {
-    logError(`Lỗi khi khởi tạo Socket: ${err.message}`);
-    isConnectingEuler = false; // Mở khóa ngay nếu có lỗi đột xuất
+    logError(`Lỗi khi khởi tạo Socket luồng chờ: ${err.message}`);
+    // Đề phòng "Kênh Độc" gây lỗi, phải shift() vứt bỏ để không kẹt mãi 1 chỗ
+    if (eulerConnectionQueue.length > 0) eulerConnectionQueue.shift();
+    isConnectingEuler = false; // 🔓 MỞ KHÓA KHẨN CẤP
   }
 }, 100);
 
