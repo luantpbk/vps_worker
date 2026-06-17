@@ -1267,7 +1267,7 @@ function startWebcast(channel, proxy) {
   key = getEulerKeyForProxy(proxy);
   // 💡 VÁ LỖI 2: Phải gọi stopWebcast để trừ tải cho Proxy
   if (!key) {
-    logWarn(
+    logInfo(
       `⏳ Thiếu Euler Key cho kênh [${channel.username}]. Đang Rate Limit hoặc hết Key...`,
     );
     stopWebcast(channel.username);
@@ -1397,7 +1397,7 @@ function startWebcast(channel, proxy) {
                 logWarn(
                   `[❌] 🔑 EULER KEY CÒN QUOTA (${remaining}) NHƯNG LỖI MẠNG 5 LẦN LIÊN TIẾP: Ép Master đổi Key mới!`,
                 );
-                keyCooldown[targetKey] = Date.now() + 5 * 60000; // Phạt nó để nó không chạy nữa
+                keyCooldown[targetKey] = Date.now() + 60000; // Phạt nó để nó không chạy nữa
                 if (masterSocket?.connected)
                   masterSocket.emit("worker_report_dead_key", {
                     key: targetKey,
@@ -1409,7 +1409,7 @@ function startWebcast(channel, proxy) {
                 logWarn(
                   `[🛑] EULER KEY CÒN QUOTA (${remaining}) NHƯNG BỊ BLOCK SPAM (Lần ${keyStrikeCount[targetKey]}/5): Cho Key ngủ 15 phút!`,
                 );
-                keyCooldown[targetKey] = Date.now() + 900000; // Khóa 15 phút
+                keyCooldown[targetKey] = Date.now() + 60000; // Khóa 60s
                 return true;
               }
             }
