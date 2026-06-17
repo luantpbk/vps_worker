@@ -1327,6 +1327,9 @@ function startWebcast(channel, proxy) {
     if (
       msg.includes("rate limit") ||
       msg.includes("too many connections") ||
+      msg.includes("max connec") ||
+      msg.includes("unexpected token") ||
+      msg.includes("is not valid json") ||
       msg.includes("rate_limit_") ||
       msg.includes("429") ||
       msg.includes("403") ||
