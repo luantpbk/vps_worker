@@ -1091,8 +1091,8 @@ setInterval(() => {
 
     // 5. Tính toán thời gian nghỉ ngơi giữa các lần cắm
     let activeKeys = Math.max(1, exclusiveEulerKeys.length);
-    let dynamicDelay = Math.max(500, 5000 / activeKeys);
-    const jitter = Math.floor(Math.random() * 500);
+    let dynamicDelay = Math.max(400, 4000 / activeKeys);
+    const jitter = Math.floor(Math.random() * 200);
     const totalDelay = Math.round(dynamicDelay + jitter);
 
     // 6. Mở khóa từ từ sau khi trễ
@@ -1277,12 +1277,19 @@ function startWebcast(channel, proxy) {
     }, 500);
     return;
   }
-
+  const proxyAgent = getCachedAgent(proxy);
   // Khối else của Direct Socket...
   const eulerOptions = {
     signApiKey: key,
-    webClientOptions: { httpsAgent: getCachedAgent(proxy) },
-    websocketOptions: { agent: getCachedAgent(proxy) },
+    webClientOptions: {
+      agent: {
+        http: proxyAgent,
+        https: proxyAgent,
+      },
+    },
+    websocketOptions: {
+      agent: proxyAgent,
+    },
     processInitialData: true,
     fetchRoomInfoOnConnect: true,
     clientParams: {
@@ -1321,6 +1328,20 @@ function startWebcast(channel, proxy) {
           library: libraryUsed,
         });
       return true;
+    }
+
+    // 💡 BỔ SUNG KHỐI NÀY: Bắt lỗi 500/502 từ phía máy chủ Euler
+    if (
+      msg.includes("500") ||
+      msg.includes("502 error") ||
+      msg.includes("unexpected sign server status")
+    ) {
+      logWarn(
+        `[☁️] Máy chủ Euler tạm thời mất kết nối với TikTok (500/502). Nhường tải sang nhịp sau...`,
+      );
+      // Không cần phạt Key hay phạt Proxy, chỉ cho Key nghỉ 10 giây rồi chạy tiếp
+      keyCooldown[targetKey] = Date.now() + 10000;
+      return true; // Ép ngắt kết nối an toàn, trả kênh về Queue
     }
 
     // 2. CHECK TRỰC TIẾP TỪ MÁY CHỦ EULER (Nếu có dấu hiệu Rate Limit)
@@ -1695,12 +1716,19 @@ setInterval(() => {
     }
   }
 
-  // 3. Dọn Socket Zombie (Đã nâng cấp: Chỉ cắt khi MAX TẢI)
+  // 3. Dọn Socket Zombie (Đã nâng cấp: Chỉ cắt khi MAX TẢI THỰC SỰ)
   const currentTotalLoad =
     Object.keys(activeConnections).length +
     eulerConnectionQueue.length +
     pendingChecks.size;
-  const isMaxLoad = currentTotalLoad >= currentDynamicMaxLoad;
+
+  // 💡 SỬA THEO YÊU CẦU: Tính max tải thực sự dựa trên cấu hình gốc (Không tụt khi Proxy/Key lỗi)
+  const safeLoad = config.loadPerProxy > 0 ? config.loadPerProxy : 15;
+  const realMaxLoad =
+    config.proxyCount * safeLoad +
+    (config.useLocalNetwork ? config.localLoad || 0 : 0);
+
+  const isMaxLoad = currentTotalLoad >= realMaxLoad;
 
   for (let user in activeConnections) {
     const conn = activeConnections[user];
@@ -1709,7 +1737,7 @@ setInterval(() => {
     if (now - (conn.lastActive || now) > 90 * 60 * 1000) {
       if (isMaxLoad) {
         logWarn(
-          `✂️ Cắt bỏ Socket Zombie [${user}] (Do tải đã MAX) sau 90 phút không rương.`,
+          `✂️ Cắt bỏ Socket Zombie [${user}] (Tải đã chạm MAX thực: ${currentTotalLoad}/${realMaxLoad}) sau 90 phút không rương.`,
         );
         stopWebcast(user);
         safeEmitRadarResult({
@@ -1718,8 +1746,8 @@ setInterval(() => {
           proxy: assignedProxies[user],
         });
       } else {
-        // Cố tình bỏ trống để hệ thống ngậm kênh (nuôi rương) vì tải vẫn còn dư dả.
-        // Cập nhật lại lastActive một chút để nó không spam check liên tục mỗi 30s.
+        // Cố tình bỏ trống để hệ thống ngậm kênh (nuôi rương) vì tải vẫn chưa chạm trần cấu hình.
+        // Reset lùi thời gian lại một chút để không check liên tục mỗi 30s.
         conn.lastActive = now - 80 * 60 * 1000;
       }
     }

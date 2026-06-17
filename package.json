@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@eulerstream/euler-api-sdk": "^0.3.1",
     "@tiktool/live": "^2.12.1",
     "axios": "^1.16.0",
     "dotenv": "^17.4.2",
@@ -18,7 +19,7 @@
     "https-proxy-agent": "^5.0.0",
     "socket.io-client": "^4.8.3",
     "socket.io-msgpack-parser": "^3.0.2",
-    "tiktok-live-connector": "^2.1.1-beta1",
+    "tiktok-live-connector": "^2.4.0",
     "ws": "^8.21.0"
   }
 }
