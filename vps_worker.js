@@ -837,7 +837,19 @@ setInterval(async () => {
     localTaskQueue.length === 0
   )
     return;
+
+  // 💡 CHẶN ĐỨNG: Chỉ duyệt hàng đợi bốc kênh nếu thực sự có Key sẵn sàng nhận việc
+  const now = Date.now();
+  const hasValidKey =
+    exclusiveEulerKeys.length > 0 &&
+    exclusiveEulerKeys.some(
+      (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
+    );
+
+  if (!hasValidKey) return; // Nếu Key đang nghẽn Quota phút, bỏ qua nhịp này, không check HTTP phí phạm.
+
   isProcessingQueue = true;
+
   try {
     // 💡 1. TÍNH TOÁN LẠI TỔNG TẢI DỰ KIẾN (Rất quan trọng)
     // Tổng tải = Đã cắm + Đang xếp hàng chờ cắm + Đang check HTTP
@@ -922,7 +934,7 @@ async function checkLiveStatus(username, proxy) {
             fetchPromise.cancel();
           }
           r(new Error("HARD_TIMEOUT"));
-        }, 20000);
+        }, 12000);
       });
 
       const res = await Promise.race([fetchPromise, hardTimeout]);
@@ -1057,6 +1069,18 @@ setInterval(() => {
     // 3. Chờ Token mạng
     if (globalConnectTokens <= 0) {
       isConnectingEuler = false; // 🔓 MỞ KHÓA (Giữ nguyên kênh trong Queue để chờ nhịp sau)
+      return;
+    }
+
+    // 💡 BỔ SUNG CHỐT CHẶN BẢO VỆ: Kiểm tra xem có Key nào còn Quota phút không
+    const now = Date.now();
+    const hasKeyWithQuota = exclusiveEulerKeys.some(
+      (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
+    );
+
+    if (!hasKeyWithQuota) {
+      // Giữ nguyên kênh trong Queue chờ vài giây đến khi Quota phút nhả ra
+      isConnectingEuler = false;
       return;
     }
 
@@ -1248,10 +1272,9 @@ function startWebcast(channel, proxy) {
     );
     stopWebcast(channel.username);
     updateDynamicCapacity(); // 💡 Cập nhật sức chứa
-    // 💡 VÁ LỖI: Sửa 15000 thành 2000 để kênh không bị ngâm trong bộ nhớ vô ích
     setTimeout(() => {
       safeEmitRadarResult({ channel, status: "SYSTEM_BUSY" });
-    }, 5000);
+    }, 500);
     return;
   }
 
@@ -1669,20 +1692,33 @@ setInterval(() => {
     }
   }
 
-  // 3. Dọn Socket Zombie
+  // 3. Dọn Socket Zombie (Đã nâng cấp: Chỉ cắt khi MAX TẢI)
+  const currentTotalLoad =
+    Object.keys(activeConnections).length +
+    eulerConnectionQueue.length +
+    pendingChecks.size;
+  const isMaxLoad = currentTotalLoad >= currentDynamicMaxLoad;
+
   for (let user in activeConnections) {
     const conn = activeConnections[user];
 
+    // Ngưỡng 90 phút không có rương
     if (now - (conn.lastActive || now) > 90 * 60 * 1000) {
-      logWarn(
-        `✂️ Cắt bỏ Socket Zombie [${user}] do 90 phút không có tín hiệu quà.`,
-      );
-      stopWebcast(user);
-      safeEmitRadarResult({
-        channel: { username: user },
-        status: "COOLDOWN",
-        proxy: assignedProxies[user],
-      });
+      if (isMaxLoad) {
+        logWarn(
+          `✂️ Cắt bỏ Socket Zombie [${user}] (Do tải đã MAX) sau 90 phút không rương.`,
+        );
+        stopWebcast(user);
+        safeEmitRadarResult({
+          channel: { username: user },
+          status: "COOLDOWN",
+          proxy: assignedProxies[user],
+        });
+      } else {
+        // Cố tình bỏ trống để hệ thống ngậm kênh (nuôi rương) vì tải vẫn còn dư dả.
+        // Cập nhật lại lastActive một chút để nó không spam check liên tục mỗi 30s.
+        conn.lastActive = now - 80 * 60 * 1000;
+      }
     }
   }
 
