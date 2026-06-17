@@ -1344,7 +1344,8 @@ function startWebcast(channel, proxy) {
       msg.includes("500") ||
       msg.includes("502") ||
       msg.includes("504") ||
-      msg.includes("unexpected sign server status")
+      msg.includes("unexpected sign server status") ||
+      msg.includes("retry-after")
     ) {
       const cacheKey = `quota_${targetKey}`;
       const now = Date.now();
