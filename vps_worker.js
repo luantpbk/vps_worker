@@ -137,7 +137,6 @@ let hasIPv6Support = false;
 let dynamicProxies = [];
 let zombieProxies = {};
 let exclusiveEulerKeys = [];
-let exclusiveTiktoolKeys = [];
 let eulerKeyMap = new Map(); // 💡 BỔ SUNG: Map lưu trữ 1 Proxy -> 1 Euler Key
 
 const agentCache = {};
@@ -284,7 +283,7 @@ function updateDynamicCapacity() {
 
   const now = Date.now();
   const validKeysCount = exclusiveEulerKeys.filter(
-    (k) => !keyCooldown[k] || now > keyCooldown[k],
+    (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
   ).length;
   const safeLoad = config.loadPerProxy > 0 ? config.loadPerProxy : 15;
   const maxLoadFromKeys = validKeysCount * EULER_PROXY_PER_KEY * safeLoad;
@@ -616,7 +615,6 @@ function connectToMaster() {
       pendingChannels: Array.from(pendingChecks.keys()),
       heldProxies: dynamicProxies,
       heldKeys: exclusiveEulerKeys,
-      heldTiktoolKeys: exclusiveTiktoolKeys,
       activeLibrary: config.activeLibrary || "tiktok-live-connector",
       supportIPv6: hasIPv6Support,
     });
@@ -848,8 +846,8 @@ setInterval(async () => {
       currentActive + eulerConnectionQueue.length + pendingChecks.size;
 
     if (
-      totalIntendedLoad >= currentDynamicMaxLoad &&
-      currentDynamicMaxLoad > 0
+      currentDynamicMaxLoad === 0 ||
+      totalIntendedLoad >= currentDynamicMaxLoad
     ) {
       while (localTaskQueue.length > 0)
         safeEmitRadarResult({
@@ -1067,10 +1065,14 @@ setInterval(async () => {
       // Thêm độ nhiễu ngẫu nhiên (Jitter) từ 0-500ms để vượt qua các bộ lọc Bot tĩnh
       const jitter = Math.floor(Math.random() * 500);
       const totalDelay = Math.round(dynamicDelay + jitter);
-      await new Promise((r) => setTimeout(r, totalDelay));
+      setTimeout(() => {
+        isConnectingEuler = false;
+      }, totalDelay);
+      return; // Kết thúc sớm, không chạy xuống finally nữa
     }
-  } finally {
-    isConnectingEuler = false;
+  } catch (err) {
+    logError(`Lỗi khi khởi tạo Socket: ${err.message}`);
+    isConnectingEuler = false; // Mở khóa ngay nếu có lỗi đột xuất
   }
 }, 100);
 
@@ -1086,7 +1088,9 @@ async function executeTask(channel) {
   const now = Date.now();
   const hasValidKey =
     exclusiveEulerKeys.length > 0 &&
-    exclusiveEulerKeys.some((k) => !keyCooldown[k] || now > keyCooldown[k]);
+    exclusiveEulerKeys.some(
+      (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
+    );
   if (!hasValidKey) {
     pendingChecks.delete(channel.username);
     updateDynamicCapacity();
@@ -1386,64 +1390,6 @@ function startWebcast(channel, proxy) {
       }
     }
 
-    // 3. XỬ LÝ DỰ PHÒNG HOẶC CHO THƯ VIỆN TIKTOOL
-    const isFatalKey =
-      msg.includes("rate limit for your plan") ||
-      msg.includes("rate_limit_account_day");
-    const isExhaustedKey =
-      msg.includes("rate_limit_account_hour") ||
-      msg.includes("rate_limit_account_minute");
-    const isOverloadedKey =
-      msg.includes("too many connections") ||
-      (msg.includes("rate_limit_") && !isFatalKey && !isExhaustedKey);
-
-    if (isFatalKey) {
-      logWarn(
-        `[❌] 🔑 KEY ĐÃ CHÁY SẠCH QUOTA (${libraryUsed}): Báo Master vứt bỏ!`,
-      );
-      keyCooldown[targetKey] = Date.now() + 5 * 60000;
-      if (masterSocket?.connected)
-        masterSocket.emit("worker_report_dead_key", {
-          key: targetKey,
-          workerName: config.workerName,
-          library: libraryUsed,
-        });
-      return true;
-    }
-
-    if (isExhaustedKey) {
-      logWarn(
-        `[🛑] KEY HẾT QUOTA GIỜ/PHÚT (${libraryUsed}): Cho Key ngủ 15 phút để hồi năng lượng!`,
-      );
-      keyCooldown[targetKey] = Date.now() + 900000; // Khóa 15 phút
-      return true;
-    }
-
-    // 💡 ÁP DỤNG ĐẾM GẬY CHO CÁC LỖI TẠM THỜI
-    if (isExhaustedKey || isOverloadedKey) {
-      keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
-
-      if (keyStrikeCount[targetKey] >= 5) {
-        logWarn(
-          `[❌] 🔑 KEY LỖI RATE LIMIT QUÁ 5 LẦN (${libraryUsed}): Ép Master vứt bỏ!`,
-        );
-        keyCooldown[targetKey] = Date.now() + 5 * 60000;
-        if (masterSocket?.connected)
-          masterSocket.emit("worker_report_dead_key", {
-            key: targetKey,
-            workerName: config.workerName,
-            library: libraryUsed,
-          });
-        return true;
-      } else {
-        const sleepTime = isExhaustedKey ? 900000 : 15000; // Hết giờ ngủ 15 phút, Overload ngủ 15 giây
-        logWarn(
-          `[🛑] ⏳ KEY CẮM QUÁ NHANH (${libraryUsed}) - Lần ${keyStrikeCount[targetKey]}/5: Cho nghỉ ngơi!`,
-        );
-        keyCooldown[targetKey] = Date.now() + sleepTime;
-        return true;
-      }
-    }
     return false;
   };
 
@@ -1708,7 +1654,8 @@ setInterval(() => {
 
   // 2. Dọn kẹt khởi tạo Socket (Cực kỳ quan trọng để không treo tải)
   for (let [user, timestamp] of connectionLocks.entries()) {
-    if (!activeConnections[user] && now - timestamp > 60000) {
+    // Tăng lên 80000 (80s) để đảm bảo không chém nhầm Socket đang cố gắng timeout ở giây thứ 60
+    if (!activeConnections[user] && now - timestamp > 80000) {
       logWarn(`[LOCK TIMEOUT] Giải phóng kênh kẹt ${user}. Thu hồi Proxy!`);
       stopWebcast(user); // 💡 Thu hồi lại load của Proxy bị chiếm dụng
       safeEmitRadarResult({ channel: { username: user }, status: "REQUEUE" });
@@ -1895,10 +1842,6 @@ function handleShutdown(signal) {
       masterSocket.emit("worker_return_keys", {
         keys: exclusiveEulerKeys,
         library: "euler",
-      });
-    if (exclusiveTiktoolKeys.length > 0)
-      masterSocket.emit("worker_return_keys", {
-        keys: exclusiveTiktoolKeys,
       });
   }
   setTimeout(() => {
