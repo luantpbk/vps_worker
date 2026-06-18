@@ -1346,8 +1346,6 @@ function startWebcast(channel, proxy) {
   const eulerOptions = {
     signApiKey: key,
     webClientOptions: {
-      httpAgent: proxyAgent,
-      httpsAgent: proxyAgent,
       agent: {
         http: proxyAgent,
         https: proxyAgent,
