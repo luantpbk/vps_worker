@@ -1648,18 +1648,30 @@ function startWebcast(channel, proxy) {
         errMsg.includes("reading 'retry-after'") // 💡 THÊM TỪ KHÓA NÀY ĐỂ BẮT ĐÚNG BỆNH
       ) {
         if (proxy !== "local") {
+          // Tăng gậy phạt cho proxy này
           proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
-          if (proxyStrikeCount[proxy] >= 4) {
-            if (masterSocket?.connected)
+
+          // 💡 BẢN VÁ: Giảm giới hạn chịu đựng từ 4 xuống 3 và in log thông báo số gậy
+          if (proxyStrikeCount[proxy] >= 3) {
+            logWarn(
+              `[❌] 🗑️ Proxy [${getShortProxy(proxy)}] dính lỗi 3 lần liên tiếp. Ép đổi Proxy mới!`,
+            );
+
+            if (masterSocket?.connected) {
               masterSocket.emit("worker_report_dead_proxy", { proxy: proxy });
-            // Phế truất Proxy vì cắm vào là lỗi
-            retireProxy(proxy);
+            }
+            retireProxy(proxy); // Lệnh trảm Proxy
+            delete proxyStrikeCount[proxy]; // Dọn dẹp án tích
           } else {
-            proxyCooldown[proxy] = Date.now() + 60000;
+            logWarn(
+              `[🛑] Proxy [${getShortProxy(proxy)}] bị chặn Rate Limit (Lần ${proxyStrikeCount[proxy]}/3). Cho nghỉ mát 60s!`,
+            );
+            proxyCooldown[proxy] = Date.now() + 60000; // Nghỉ 60 giây
             safeEmitRadarResult({ channel, status: "ERROR" });
           }
         } else {
-          proxyCooldown["local"] = Date.now() + 45000;
+          logWarn(`[🛑] Mạng Local bị chặn Rate Limit. Cho nghỉ 120s!`);
+          proxyCooldown["local"] = Date.now() + 120000;
           safeEmitRadarResult({ channel, status: "ERROR" });
         }
       } else {
