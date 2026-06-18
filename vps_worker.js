@@ -1346,7 +1346,8 @@ function startWebcast(channel, proxy) {
       msg.includes("insufficient balance") ||
       msg.includes("api key is invalid") ||
       msg.includes("invalid api key") ||
-      msg.includes("unauthorized")
+      msg.includes("unauthorized") ||
+      msg.includes("unexpected sign server status 401")
     ) {
       logWarn(
         `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Báo Master vứt bỏ Key này!`,
