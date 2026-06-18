@@ -1595,11 +1595,6 @@ function startWebcast(channel, proxy) {
     }
   });
 
-  let timeoutHandle;
-  const timeoutPromise = new Promise((_, r) => {
-    timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000);
-  });
-
   consumeEulerRequest(key); // 💡 Kích hoạt ghi nhận lượt dùng cho Euler Key
   // ✅ Thay bằng lệnh bọc Mutex này:
   executeWithKeyMutex(key, async () => {
@@ -1610,150 +1605,164 @@ function startWebcast(channel, proxy) {
       safeEmitRadarResult({ channel, status: "ERROR" });
       return;
     }
+    // ==========================================
+    // 💡 BẢN VÁ: CHUYỂN ĐỒNG HỒ VÀO BÊN TRONG KHÓA
+    // Chỉ bắt đầu đếm 60s khi luồng thực sự được mở khóa và bắt đầu chạy
+    // ==========================================
+    let timeoutHandle;
+    const timeoutPromise = new Promise((_, r) => {
+      timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000);
+    });
+    try {
+      // BẮT BUỘC PHẢI CÓ 'await' Ở ĐÂY ĐỂ GIỮ KHÓA CHO ĐẾN KHI CHẠY XONG catch/then
+      await Promise.race([conn.connect(), timeoutPromise])
+        .then((state) => {
+          clearTimeout(timeoutHandle);
+          // ==========================================
+          // 💡 VÁ LỖI 3: CHỐNG CẮM ĐÚP DO SOCKET LAG QUÁ 60 GIÂY
+          // Nếu đã bị dọn rác xóa connectionLocks, tuyệt đối không được giữ cái socket vừa nối thành công này!
+          // ==========================================
+          if (
+            !connectionLocks.has(channel.username) &&
+            !activeConnections[channel.username]
+          ) {
+            logWarn(
+              `[GHOST SOCKET] Kênh ${channel.username} nối thành công nhưng quá hạn 120s. Rút ống thở ngay!`,
+            );
+            try {
+              if (typeof conn.disconnect === "function") conn.disconnect();
+              if (conn.client?.ws) conn.client.ws.terminate();
+            } catch (e) {}
+            return;
+          }
+          roomId =
+            state?.roomInfo?.roomId ||
+            state?.roomInfo?.room_id ||
+            state?.roomId ||
+            null;
 
-    // BẮT BUỘC PHẢI CÓ 'await' Ở ĐÂY ĐỂ GIỮ KHÓA CHO ĐẾN KHI CHẠY XONG catch/then
-    await Promise.race([conn.connect(), timeoutPromise])
-      .then((state) => {
-        // ==========================================
-        // 💡 VÁ LỖI 3: CHỐNG CẮM ĐÚP DO SOCKET LAG QUÁ 60 GIÂY
-        // Nếu đã bị dọn rác xóa connectionLocks, tuyệt đối không được giữ cái socket vừa nối thành công này!
-        // ==========================================
-        if (
-          !connectionLocks.has(channel.username) &&
-          !activeConnections[channel.username]
-        ) {
-          logWarn(
-            `[GHOST SOCKET] Kênh ${channel.username} nối thành công nhưng quá hạn 120s. Rút ống thở ngay!`,
+          if (roomId && pendingBoxes.length) {
+            for (const data of pendingBoxes) emitChest(data);
+            pendingBoxes.length = 0;
+          }
+          activeConnections[channel.username] = conn;
+          activeConnections[channel.username].lastActive = Date.now();
+
+          // 💡 ĐÃ SỬA: Đọc cờ trực tiếp từ đối tượng conn
+          activeConnections[channel.username].usedKey = key;
+          // ==========================================
+          // 💡 RỬA TỘI: KHI KEY HOẠT ĐỘNG TỐT, XÓA MỌI ÁN PHẠT
+          // ==========================================
+          delete keyStrikeCount[key];
+          proxyStrikeCount[proxy] = 0;
+          logSuccess(
+            `✅ [${channel.username}] Kết nối thành công qua (${getShortProxy(proxy)})`,
           );
+
+          setTimeout(() => {
+            isProcessingInitial = false;
+          }, 5000);
+        })
+        .catch(async (err) => {
           clearTimeout(timeoutHandle);
           try {
+            if (typeof conn.removeAllListeners === "function")
+              conn.removeAllListeners();
             if (typeof conn.disconnect === "function") conn.disconnect();
-            if (conn.client?.ws) conn.client.ws.terminate();
+            if (
+              conn.client?.ws &&
+              typeof conn.client.ws.terminate === "function"
+            ) {
+              conn.client.ws.terminate();
+            }
           } catch (e) {}
-          return;
-        }
-        roomId =
-          state?.roomInfo?.roomId ||
-          state?.roomInfo?.room_id ||
-          state?.roomId ||
-          null;
-
-        if (roomId && pendingBoxes.length) {
-          for (const data of pendingBoxes) emitChest(data);
-          pendingBoxes.length = 0;
-        }
-        clearTimeout(timeoutHandle);
-        activeConnections[channel.username] = conn;
-        activeConnections[channel.username].lastActive = Date.now();
-
-        // 💡 ĐÃ SỬA: Đọc cờ trực tiếp từ đối tượng conn
-        activeConnections[channel.username].usedKey = key;
-        // ==========================================
-        // 💡 RỬA TỘI: KHI KEY HOẠT ĐỘNG TỐT, XÓA MỌI ÁN PHẠT
-        // ==========================================
-        delete keyStrikeCount[key];
-        proxyStrikeCount[proxy] = 0;
-        logSuccess(
-          `✅ [${channel.username}] Kết nối thành công qua (${getShortProxy(proxy)})`,
-        );
-
-        setTimeout(() => {
-          isProcessingInitial = false;
-        }, 5000);
-      })
-      .catch(async (err) => {
-        clearTimeout(timeoutHandle);
-        try {
-          if (typeof conn.removeAllListeners === "function")
-            conn.removeAllListeners();
-          if (typeof conn.disconnect === "function") conn.disconnect();
-          if (
-            conn.client?.ws &&
-            typeof conn.client.ws.terminate === "function"
-          ) {
-            conn.client.ws.terminate();
+          // 💡 CHIẾN THUẬT CẮT BÃO LOG (CHỐNG ẢO GIÁC)
+          // Nếu Key đã bị Master thu hồi khỏi kho, các kết nối đang chạy dở sẽ tự hủy trong im lặng
+          if (!exclusiveEulerKeys.includes(key)) {
+            stopWebcast(channel.username);
+            return;
           }
-        } catch (e) {}
-        // 💡 CHIẾN THUẬT CẮT BÃO LOG (CHỐNG ẢO GIÁC)
-        // Nếu Key đã bị Master thu hồi khỏi kho, các kết nối đang chạy dở sẽ tự hủy trong im lặng
-        if (!exclusiveEulerKeys.includes(key)) {
-          stopWebcast(channel.username);
-          return;
-        }
-        // ==========================================
-        // 💡 VÁ LỖI TẠI ĐÂY: Khai báo errMsg ngay lập tức TRƯỚC KHI sử dụng!
-        // ==========================================
-        let errMsg = String(err?.message || err)
-          .toLowerCase()
-          .replace(/\u001b\[.*?m/g, "") // Xóa mã màu
-          .replace(/\n/g, " "); // Xóa dấu xuống dòng
+          // ==========================================
+          // 💡 VÁ LỖI TẠI ĐÂY: Khai báo errMsg ngay lập tức TRƯỚC KHI sử dụng!
+          // ==========================================
+          let errMsg = String(err?.message || err)
+            .toLowerCase()
+            .replace(/\u001b\[.*?m/g, "") // Xóa mã màu
+            .replace(/\n/g, " "); // Xóa dấu xuống dòng
 
-        // 💡 BẢN VÁ: XỬ LÝ ÊM ÁI LỖI TIMEOUT (Do mạng lag, Proxy chậm)
-        if (errMsg.includes("socket_timeout")) {
-          logWarn(
-            `[⏳] Kênh ${channel.username} quá hạn kết nối 15s (Proxy chậm). Sẽ thử lại sau!`,
-          );
-          safeEmitRadarResult({ channel, status: "ERROR" });
-          stopWebcast(channel.username);
-          return; // Thoát luôn, không ném vào check Key hay phạt Proxy vì đây chỉ là lag mạng
-        }
-        const isKeyDead = await checkAndReportDeadKey(err, key);
-
-        logWarn(
-          `[SOCKET LỖI] Kênh: ${channel.username} | Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
-        );
-
-        if (isKeyDead) {
-          setTimeout(() => {
+          // 💡 BẢN VÁ: XỬ LÝ ÊM ÁI LỖI TIMEOUT (Do mạng lag, Proxy chậm)
+          if (errMsg.includes("socket_timeout")) {
+            logWarn(
+              `[⏳] Kênh ${channel.username} quá hạn kết nối 15s (Proxy chậm). Sẽ thử lại sau!`,
+            );
             safeEmitRadarResult({ channel, status: "ERROR" });
-          }, 2000);
-          stopWebcast(channel.username);
-          return;
-        }
+            stopWebcast(channel.username);
+            return; // Thoát luôn, không ném vào check Key hay phạt Proxy vì đây chỉ là lag mạng
+          }
+          const isKeyDead = await checkAndReportDeadKey(err, key);
 
-        if (
-          errMsg.includes("not found") ||
-          errMsg.includes("offline") ||
-          errMsg.includes("ended")
-        ) {
-          safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
-        } else if (
-          errMsg.includes("rate limit") ||
-          errMsg.includes("captcha") ||
-          errMsg.includes("reading 'retry-after'") // 💡 THÊM TỪ KHÓA NÀY ĐỂ BẮT ĐÚNG BỆNH
-        ) {
-          if (proxy !== "local") {
-            // Tăng gậy phạt cho proxy này
-            proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
+          logWarn(
+            `[SOCKET LỖI] Kênh: ${channel.username} | Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
+          );
 
-            // 💡 BẢN VÁ: Giảm giới hạn chịu đựng từ 4 xuống 3 và in log thông báo số gậy
-            if (proxyStrikeCount[proxy] >= 3) {
-              logWarn(
-                `[❌] 🗑️ Proxy [${getShortProxy(proxy)}] dính lỗi 3 lần liên tiếp. Ép đổi Proxy mới!`,
-              );
+          if (isKeyDead) {
+            setTimeout(() => {
+              safeEmitRadarResult({ channel, status: "ERROR" });
+            }, 2000);
+            stopWebcast(channel.username);
+            return;
+          }
 
-              if (masterSocket?.connected) {
-                masterSocket.emit("worker_report_dead_proxy", { proxy: proxy });
+          if (
+            errMsg.includes("not found") ||
+            errMsg.includes("offline") ||
+            errMsg.includes("ended")
+          ) {
+            safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
+          } else if (
+            errMsg.includes("rate limit") ||
+            errMsg.includes("captcha") ||
+            errMsg.includes("reading 'retry-after'") // 💡 THÊM TỪ KHÓA NÀY ĐỂ BẮT ĐÚNG BỆNH
+          ) {
+            if (proxy !== "local") {
+              // Tăng gậy phạt cho proxy này
+              proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
+
+              // 💡 BẢN VÁ: Giảm giới hạn chịu đựng từ 4 xuống 3 và in log thông báo số gậy
+              if (proxyStrikeCount[proxy] >= 3) {
+                logWarn(
+                  `[❌] 🗑️ Proxy [${getShortProxy(proxy)}] dính lỗi 3 lần liên tiếp. Ép đổi Proxy mới!`,
+                );
+
+                if (masterSocket?.connected) {
+                  masterSocket.emit("worker_report_dead_proxy", {
+                    proxy: proxy,
+                  });
+                }
+                retireProxy(proxy); // Lệnh trảm Proxy
+                delete proxyStrikeCount[proxy]; // Dọn dẹp án tích
+              } else {
+                logWarn(
+                  `[🛑] Proxy [${getShortProxy(proxy)}] bị chặn Rate Limit (Lần ${proxyStrikeCount[proxy]}/3). Cho nghỉ mát 60s!`,
+                );
+                proxyCooldown[proxy] = Date.now() + 60000; // Nghỉ 60 giây
+                safeEmitRadarResult({ channel, status: "ERROR" });
               }
-              retireProxy(proxy); // Lệnh trảm Proxy
-              delete proxyStrikeCount[proxy]; // Dọn dẹp án tích
             } else {
-              logWarn(
-                `[🛑] Proxy [${getShortProxy(proxy)}] bị chặn Rate Limit (Lần ${proxyStrikeCount[proxy]}/3). Cho nghỉ mát 60s!`,
-              );
-              proxyCooldown[proxy] = Date.now() + 60000; // Nghỉ 60 giây
+              logWarn(`[🛑] Mạng Local bị chặn Rate Limit. Cho nghỉ 120s!`);
+              proxyCooldown["local"] = Date.now() + 120000;
               safeEmitRadarResult({ channel, status: "ERROR" });
             }
           } else {
-            logWarn(`[🛑] Mạng Local bị chặn Rate Limit. Cho nghỉ 120s!`);
-            proxyCooldown["local"] = Date.now() + 120000;
             safeEmitRadarResult({ channel, status: "ERROR" });
           }
-        } else {
-          safeEmitRadarResult({ channel, status: "ERROR" });
-        }
-        stopWebcast(channel.username);
-      });
+          stopWebcast(channel.username);
+        });
+    } finally {
+      // 💡 BẢO TIÊU TỐI THƯỢNG:
+      // Dù thành công, thất bại, hay văng lỗi ngầm, đồng hồ BẮT BUỘC phải được dập tắt!
+      clearTimeout(timeoutHandle);
+    }
   });
 }
 
