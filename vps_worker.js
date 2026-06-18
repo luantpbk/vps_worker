@@ -1317,136 +1317,134 @@ function startWebcast(channel, proxy) {
 
   const checkAndReportDeadKey = async (errObj, targetKey) => {
     if (!targetKey) return false;
-    if (keyCooldown[targetKey] && Date.now() < keyCooldown[targetKey])
-      return true;
+
+    const now = Date.now();
+    // 💡 LỚP GIÁP 1: Nếu key đã bị phạt trước đó rồi thì báo chết/ngừng luôn, chặn đứng spam.
+    if (keyCooldown[targetKey] && now < keyCooldown[targetKey]) return true;
+
     let errText =
       typeof errObj === "string"
         ? errObj
         : errObj?.message || JSON.stringify(errObj);
     const msg = String(errText).toLowerCase();
 
-    // 1. ÁN TỬ TỨC THÌ (Lỗi cứng không cần check API): Sai Key, Hết tiền
+    // ==========================================
+    // 1. ÁN TỬ TỨC THÌ (LỖI CỨNG 100%): Báo Master đổi Key ngay
+    // ==========================================
     if (
       msg.includes("insufficient balance") ||
       msg.includes("api key is invalid") ||
-      msg.includes("invalid api key")
+      msg.includes("invalid api key") ||
+      msg.includes("unauthorized")
     ) {
       logWarn(
         `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Báo Master vứt bỏ Key này!`,
       );
-      keyCooldown[targetKey] = Date.now() + 5 * 60000;
-      if (masterSocket?.connected)
+      keyCooldown[targetKey] = now + 5 * 60000; // Phạt 5 phút
+      if (masterSocket?.connected) {
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
           workerName: config.workerName,
           library: libraryUsed,
         });
+      }
       return true;
     }
 
-    // 2. CHECK TRỰC TIẾP TỪ MÁY CHỦ EULER (Nếu có dấu hiệu Rate Limit)
+    // ==========================================
+    // 2. CÁC LỖI KHÁC: CHỦ ĐỘNG GỌI CHECK RATE LIMIT
+    // ==========================================
+    // 💡 KHÓA TẠM THỜI (OPTIMISTIC LOCK): Phạt ngay 15s trước khi gọi API để
+    // các socket khác không lao vào spam trong lúc chờ Euler phản hồi.
+    keyCooldown[targetKey] = now + 15000;
+
+    const cacheKey = `quota_${targetKey}`;
+
+    // 💡 CHỐNG SPAM CALL API: Dù có khóa tạm thời, ta vẫn đảm bảo chỉ gọi 1 phút/lần
     if (
-      msg.includes("rate limit") ||
-      msg.includes("too many connections") ||
-      msg.includes("max connec") ||
-      msg.includes("unexpected token") ||
-      msg.includes("is not valid json") ||
-      msg.includes("rate_limit_") ||
-      msg.includes("429") ||
-      msg.includes("403") ||
-      msg.includes("401") ||
-      msg.includes("500") ||
-      msg.includes("502") ||
-      msg.includes("504") ||
-      msg.includes("unexpected sign server status") ||
-      msg.includes("retry-after")
+      apiCheckCache.has(cacheKey) &&
+      now - apiCheckCache.get(cacheKey) < 60000
     ) {
-      const cacheKey = `quota_${targetKey}`;
-      const now = Date.now();
+      // Vẫn kill socket (return true) nhưng không gọi API để tránh dính đòn chặn IP của Euler
+      return true;
+    }
 
-      // 💡 NẾU ĐÃ CHECK TRONG 60S QUA, BỎ QUA GỌI API!
-      if (
-        apiCheckCache.has(cacheKey) &&
-        now - apiCheckCache.get(cacheKey) < 60000
-      ) {
-        logWarn(
-          `[⚠️] Đang chờ 60s để check lại Quota cho Key này nhằm tránh Ban IP...`,
-        );
-        return true; // Tạm khóa chờ nhịp sau
-      }
-      apiCheckCache.set(cacheKey, now); // Ghi nhớ thời điểm check
-      try {
-        const eulerClient = new EulerStreamApiClient({ apiKey: targetKey });
+    apiCheckCache.set(cacheKey, now);
 
-        // Gọi API lên Euler để lấy thông tin Quota thật sự
-        const res = await eulerClient.webcast.getRateLimits();
-        if (res && res.data && res.data.day) {
-          const remaining = res.data.day.remaining;
+    try {
+      const eulerClient = new EulerStreamApiClient({ apiKey: targetKey });
+      const res = await eulerClient.webcast.getRateLimits();
 
-          if (remaining <= 0) {
+      if (res && res.data && res.data.day) {
+        const remaining = res.data.day.remaining;
+
+        if (remaining <= 0) {
+          logWarn(
+            `[❌] 🔑 KEY HẾT QUOTA (Còn 0 lượt): Báo Master đổi Key mới!`,
+          );
+          keyCooldown[targetKey] = now + 5 * 60000;
+          if (masterSocket?.connected) {
+            masterSocket.emit("worker_report_dead_key", {
+              key: targetKey,
+              workerName: config.workerName,
+              library: libraryUsed,
+            });
+          }
+          return true;
+        } else {
+          // Còn Quota nhưng vẫn văng lỗi (Do nghẽn mạng TikTok, IP Proxy bẩn...)
+          keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
+
+          // 💡 GIẢM TỪ 5 XUỐNG 3 THEO YÊU CẦU
+          if (keyStrikeCount[targetKey] >= 3) {
             logWarn(
-              `[❌] 🔑 EULER KEY ĐÃ CHÁY SẠCH QUOTA NGÀY (Còn 0 lượt): Báo Master đổi Key mới!`,
+              `[❌] 🔑 KEY CÒN QUOTA (${remaining}) NHƯNG LỖI 3 LẦN LIÊN TIẾP: Ép Master đổi Key mới!`,
             );
-            keyCooldown[targetKey] = Date.now() + 5 * 60000;
-            if (masterSocket?.connected)
+            keyCooldown[targetKey] = now + 5 * 60000;
+            if (masterSocket?.connected) {
               masterSocket.emit("worker_report_dead_key", {
                 key: targetKey,
                 workerName: config.workerName,
                 library: libraryUsed,
               });
+            }
             return true;
           } else {
-            // ==========================================
-            // 💡 VÁ LỖI CẤP KIẾN TRÚC: XỬ LÝ LỖI "SỐNG THỰC VẬT"
-            // ==========================================
-            keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
-
-            if (keyStrikeCount[targetKey] >= 5) {
-              logWarn(
-                `[❌] 🔑 EULER KEY CÒN QUOTA (${remaining}) NHƯNG LỖI MẠNG 5 LẦN LIÊN TIẾP: Ép Master đổi Key mới!`,
-              );
-              keyCooldown[targetKey] = Date.now() + 5 * 60000; // Phạt nó để nó không chạy nữa
-              if (masterSocket?.connected)
-                masterSocket.emit("worker_report_dead_key", {
-                  key: targetKey,
-                  workerName: config.workerName,
-                  library: libraryUsed,
-                });
-              return true;
-            } else {
-              // ==========================================
-              // 💡 VÁ LỖI CẤP KIẾN TRÚC: XỬ LÝ LỖI "SỐNG THỰC VẬT"
-              // ==========================================
-              keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
-
-              if (keyStrikeCount[targetKey] >= 5) {
-                logWarn(
-                  `[❌] 🔑 EULER KEY CÒN QUOTA (${remaining}) NHƯNG LỖI MẠNG 5 LẦN LIÊN TIẾP: Ép Master đổi Key mới!`,
-                );
-                keyCooldown[targetKey] = Date.now() + 60000; // Phạt nó để nó không chạy nữa
-                if (masterSocket?.connected)
-                  masterSocket.emit("worker_report_dead_key", {
-                    key: targetKey,
-                    workerName: config.workerName,
-                    library: libraryUsed,
-                  });
-                return true;
-              } else {
-                logWarn(
-                  `[🛑] EULER KEY CÒN QUOTA (${remaining}) NHƯNG BỊ BLOCK SPAM (Lần ${keyStrikeCount[targetKey]}/5): Cho Key ngủ 1 phút!`,
-                );
-                keyCooldown[targetKey] = Date.now() + 60000; // Khóa 60s
-                return true;
-              }
-            }
+            logWarn(
+              `[🛑] KEY CÒN QUOTA (${remaining}) NHƯNG BỊ LỖI (Lần ${keyStrikeCount[targetKey]}/3): Cho Key ngủ 60s!`,
+            );
+            keyCooldown[targetKey] = now + 60000; // Khóa đúng 60s
+            return true;
           }
         }
-      } catch (apiErr) {
-        logWarn(
-          `⚠️ Lỗi khi check API Euler: ${apiErr.message}. Rơi vào check dự phòng...`,
-        );
-        // Nếu API sập, tiếp tục chạy xuống khối dự phòng bên dưới
       }
+    } catch (apiErr) {
+      // ==========================================
+      // 💡 VÁ LỖI VÒNG LẶP: Nếu API Euler bị sập (timeout, 502...)
+      // Tuyệt đối không được bỏ qua. Phải tính 1 gậy và phạt nghỉ!
+      // ==========================================
+      logWarn(
+        `⚠️ Lỗi kiểm tra Quota Euler: ${apiErr.message}. Bắt buộc phạt Key ngủ 30s...`,
+      );
+
+      keyStrikeCount[targetKey] = (keyStrikeCount[targetKey] || 0) + 1;
+
+      if (keyStrikeCount[targetKey] >= 3) {
+        logWarn(
+          `[❌] 🔑 API EULER TỪ CHỐI KẾT NỐI 3 LẦN LIÊN TIẾP. Ép đổi Key mới!`,
+        );
+        keyCooldown[targetKey] = now + 5 * 60000;
+        if (masterSocket?.connected) {
+          masterSocket.emit("worker_report_dead_key", {
+            key: targetKey,
+            workerName: config.workerName,
+            library: libraryUsed,
+          });
+        }
+      } else {
+        keyCooldown[targetKey] = now + 30000; // Phạt nhẹ 30s
+      }
+      return true;
     }
 
     return false;
