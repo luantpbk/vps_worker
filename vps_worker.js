@@ -1280,6 +1280,7 @@ async function executeTask(channel) {
     if (status === "LIVE") {
       const socketProxy = getNextAvailableProxy();
       if (!socketProxy) {
+        logWarn("Không còn Proxy để thực hiện");
         safeEmitRadarResult({ channel, status: "REQUEUE" });
         return;
       }
@@ -1309,6 +1310,7 @@ async function executeTask(channel) {
 }
 
 function startWebcast(channel, proxy) {
+  console.logInfo(`Bắt đầu cắm socket ${channel}`);
   if (activeConnections[channel.username]) return;
   connectionLocks.set(channel.username, Date.now());
 
