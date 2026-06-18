@@ -1680,6 +1680,14 @@ function startWebcast(channel, proxy) {
           stopWebcast(channel.username);
           return;
         }
+        // ==========================================
+        // 💡 VÁ LỖI TẠI ĐÂY: Khai báo errMsg ngay lập tức TRƯỚC KHI sử dụng!
+        // ==========================================
+        let errMsg = String(err?.message || err)
+          .toLowerCase()
+          .replace(/\u001b\[.*?m/g, "") // Xóa mã màu
+          .replace(/\n/g, " "); // Xóa dấu xuống dòng
+
         // 💡 BẢN VÁ: XỬ LÝ ÊM ÁI LỖI TIMEOUT (Do mạng lag, Proxy chậm)
         if (errMsg.includes("socket_timeout")) {
           logWarn(
@@ -1690,7 +1698,6 @@ function startWebcast(channel, proxy) {
           return; // Thoát luôn, không ném vào check Key hay phạt Proxy vì đây chỉ là lag mạng
         }
         const isKeyDead = await checkAndReportDeadKey(err, key);
-        let errMsg = String(err?.message || err).toLowerCase();
 
         logWarn(
           `[SOCKET LỖI] Kênh: ${channel.username} | Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
