@@ -1455,8 +1455,19 @@ function startWebcast(channel, proxy) {
 
     try {
       const eulerClient = new EulerStreamApiClient({ apiKey: targetKey });
-      const res = await eulerClient.webcast.getRateLimits();
-
+      // ==========================================
+      // 💡 BẢN VÁ TỬ HUYỆT: ÉP TIMEOUT 5S CHỐNG TREO MUTEX
+      // Nếu API Euler lag quá 5 giây, ép văng lỗi để bảo vệ hệ thống luồng.
+      // ==========================================
+      let apiTimer;
+      const apiTimeout = new Promise((_, r) => {
+        apiTimer = setTimeout(() => r(new Error("API_TIMEOUT")), 10000);
+      });
+      const res = await Promise.race([
+        eulerClient.webcast.getRateLimits(),
+        apiTimeout,
+      ]);
+      clearTimeout(apiTimer);
       if (res && res.data && res.data.day) {
         const remaining = res.data.day.remaining;
 
@@ -1608,6 +1619,7 @@ function startWebcast(channel, proxy) {
     if (keyCooldown[key] && Date.now() < keyCooldown[key]) {
       // Nhường CPU, im lặng hủy kết nối để dọn rác log
       safeEmitRadarResult({ channel, status: "ERROR" });
+      stopWebcast(channel.username);
       return;
     }
     // ==========================================
@@ -1617,6 +1629,7 @@ function startWebcast(channel, proxy) {
     // ==========================================
     if (!exclusiveEulerKeys.includes(key)) {
       safeEmitRadarResult({ channel, status: "REQUEUE" });
+      stopWebcast(channel.username);
       return;
     }
     // ==========================================
