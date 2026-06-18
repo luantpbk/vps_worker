@@ -1329,6 +1329,17 @@ function startWebcast(channel, proxy) {
     const msg = String(errText).toLowerCase();
 
     // ==========================================
+    // 💡 BẢN VÁ: THA BỔNG CHO KEY
+    // Chặn đứng bug thư viện: Lỗi này 100% do Proxy bẩn gây ra, Key không có tội.
+    // ==========================================
+    if (
+      msg.includes("reading 'retry-after'") ||
+      msg.includes("properties of undefined")
+    ) {
+      return false; // Trả về false để Master không trừ điểm Key, nhường quyền "chém" cho Proxy
+    }
+
+    // ==========================================
     // 1. ÁN TỬ TỨC THÌ (LỖI CỨNG 100%): Báo Master đổi Key ngay
     // ==========================================
     if (
@@ -1627,12 +1638,18 @@ function startWebcast(channel, proxy) {
         errMsg.includes("ended")
       ) {
         safeEmitRadarResult({ channel, status: "OFFLINE", proxy });
-      } else if (errMsg.includes("rate limit") || errMsg.includes("captcha")) {
+      } else if (
+        errMsg.includes("rate limit") ||
+        errMsg.includes("captcha") ||
+        errMsg.includes("reading 'retry-after'") // 💡 THÊM TỪ KHÓA NÀY ĐỂ BẮT ĐÚNG BỆNH
+      ) {
         if (proxy !== "local") {
           proxyStrikeCount[proxy] = (proxyStrikeCount[proxy] || 0) + 1;
           if (proxyStrikeCount[proxy] >= 4) {
             if (masterSocket?.connected)
               masterSocket.emit("worker_report_dead_proxy", { proxy: proxy });
+            // Phế truất Proxy vì cắm vào là lỗi
+            retireProxy(proxy);
           } else {
             proxyCooldown[proxy] = Date.now() + 60000;
             safeEmitRadarResult({ channel, status: "ERROR" });
