@@ -127,6 +127,31 @@ function consumeEulerRequest(key) {
   eulerRateLimiter[key].push(Date.now());
 }
 
+// Hàm tính toán chính xác số Slot Key còn trống để nhận Proxy mới
+function getAvailableKeySlots() {
+  const now = Date.now();
+  let availableSlots = 0;
+  const keyUsageCount = {};
+  exclusiveEulerKeys.forEach((k) => (keyUsageCount[k] = 0));
+
+  // Đếm số lượng Proxy đang bám vào từng Key
+  for (let k of eulerKeyMap.values()) {
+    if (keyUsageCount[k] !== undefined) keyUsageCount[k]++;
+  }
+
+  // Chỉ cộng dồn Slot của những Key chưa bị phạt và chưa dính Rate Limit
+  exclusiveEulerKeys.forEach((k) => {
+    if ((!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k)) {
+      availableSlots += Math.max(
+        0,
+        EULER_PROXY_PER_KEY - (keyUsageCount[k] || 0),
+      );
+    }
+  });
+
+  return availableSlots;
+}
+
 let pendingChecks = new Map();
 let connectionLocks = new Map(); // 💡 FIX 4: Đã khai báo biến chống Ghost Load
 
@@ -270,7 +295,6 @@ setInterval(
   2 * 60 * 1000,
 );
 
-// 💡 HÀM MỚI: Tính toán và báo cáo sức chứa ngay lập tức (Real-time Capacity)
 function updateDynamicCapacity() {
   let aliveProxyLoad =
     config.useLocalNetwork && proxyHealth["local"]?.status === "SẴN SÀNG"
@@ -282,12 +306,17 @@ function updateDynamicCapacity() {
   }
 
   const now = Date.now();
-  const validKeysCount = exclusiveEulerKeys.filter(
-    (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
-  ).length;
   const safeLoad = config.loadPerProxy > 0 ? config.loadPerProxy : 15;
-  const maxLoadFromKeys = validKeysCount * EULER_PROXY_PER_KEY * safeLoad;
 
+  // SỬA ĐOẠN NÀY: Dùng tổng slot nhân với sức chứa
+  let validSlots = 0;
+  exclusiveEulerKeys.forEach((k) => {
+    if ((!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k)) {
+      validSlots += EULER_PROXY_PER_KEY;
+    }
+  });
+
+  const maxLoadFromKeys = validSlots * safeLoad;
   const newMaxLoad = Math.min(aliveProxyLoad, maxLoadFromKeys);
 
   if (newMaxLoad !== currentDynamicMaxLoad) {
@@ -838,16 +867,7 @@ setInterval(async () => {
   )
     return;
 
-  // 💡 CHẶN ĐỨNG: Chỉ duyệt hàng đợi bốc kênh nếu thực sự có Key sẵn sàng nhận việc
-  const now = Date.now();
-  const hasValidKey =
-    exclusiveEulerKeys.length > 0 &&
-    exclusiveEulerKeys.some(
-      (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
-    );
-
-  if (!hasValidKey) return; // Nếu Key đang nghẽn Quota phút, bỏ qua nhịp này, không check HTTP phí phạm.
-
+  if (getAvailableKeySlots() <= 0) return; // Nếu hết sạch Slot khả dụng, nhường CPU nghỉ ngơi không check HTTP nữa
   isProcessingQueue = true;
 
   try {
@@ -1115,14 +1135,8 @@ async function executeTask(channel) {
     pendingChecks.delete(channel.username);
     return;
   }
-  // 💡 CHẶN ĐỨNG TỪ CỬA: Nếu dàn Key đang đình công, từ chối check HTTP để tiết kiệm CPU!
-  const now = Date.now();
-  const hasValidKey =
-    exclusiveEulerKeys.length > 0 &&
-    exclusiveEulerKeys.some(
-      (k) => (!keyCooldown[k] || now > keyCooldown[k]) && canUseEulerKey(k),
-    );
-  if (!hasValidKey) {
+  // THAY BẰNG:
+  if (getAvailableKeySlots() <= 0) {
     pendingChecks.delete(channel.username);
     updateDynamicCapacity();
     return safeEmitRadarResult({ channel, status: "SYSTEM_BUSY" });
@@ -1419,7 +1433,7 @@ function startWebcast(channel, proxy) {
                 return true;
               } else {
                 logWarn(
-                  `[🛑] EULER KEY CÒN QUOTA (${remaining}) NHƯNG BỊ BLOCK SPAM (Lần ${keyStrikeCount[targetKey]}/5): Cho Key ngủ 15 phút!`,
+                  `[🛑] EULER KEY CÒN QUOTA (${remaining}) NHƯNG BỊ BLOCK SPAM (Lần ${keyStrikeCount[targetKey]}/5): Cho Key ngủ 1 phút!`,
                 );
                 keyCooldown[targetKey] = Date.now() + 60000; // Khóa 60s
                 return true;
