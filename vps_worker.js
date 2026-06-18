@@ -1455,10 +1455,6 @@ function startWebcast(channel, proxy) {
 
     try {
       const eulerClient = new EulerStreamApiClient({ apiKey: targetKey });
-      // ==========================================
-      // 💡 BẢN VÁ TỬ HUYỆT: ÉP TIMEOUT 5S CHỐNG TREO MUTEX
-      // Nếu API Euler lag quá 5 giây, ép văng lỗi để bảo vệ hệ thống luồng.
-      // ==========================================
       let apiTimer;
       const apiTimeout = new Promise((_, r) => {
         apiTimer = setTimeout(() => r(new Error("API_TIMEOUT")), 10000);
@@ -1706,6 +1702,7 @@ function startWebcast(channel, proxy) {
           // 💡 CHIẾN THUẬT CẮT BÃO LOG (CHỐNG ẢO GIÁC)
           // Nếu Key đã bị Master thu hồi khỏi kho, các kết nối đang chạy dở sẽ tự hủy trong im lặng
           if (!exclusiveEulerKeys.includes(key)) {
+            logWarn(`Key ${key} đã bị thu hồi từ trước`);
             stopWebcast(channel.username);
             return;
           }
