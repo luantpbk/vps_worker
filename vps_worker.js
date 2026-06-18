@@ -1310,7 +1310,7 @@ async function executeTask(channel) {
 }
 
 function startWebcast(channel, proxy) {
-  console.logInfo(`Bắt đầu cắm socket ${channel}`);
+  logInfo(`Bắt đầu cắm socket ${channel}`);
   if (activeConnections[channel.username]) return;
   connectionLocks.set(channel.username, Date.now());
 
@@ -1450,6 +1450,7 @@ function startWebcast(channel, proxy) {
       now - apiCheckCache.get(cacheKey) < 60000
     ) {
       // Vẫn kill socket (return true) nhưng không gọi API để tránh dính đòn chặn IP của Euler
+      logInfo("Kill socket (return true) nhưng không gọi API");
       return true;
     }
 
