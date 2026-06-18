@@ -11,7 +11,7 @@ const fs = require("fs");
 const EulerStreamApiClient = require("@eulerstream/euler-api-sdk").default;
 
 const CONFIG_FILE = "vps_config.json";
-const EULER_PROXY_PER_KEY = 2;
+const EULER_PROXY_PER_KEY = 3;
 
 let config = {
   masterUrl: "http://localhost:3001",
