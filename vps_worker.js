@@ -718,6 +718,11 @@ function connectToMaster() {
     exclusiveEulerKeys = Array.from(
       new Set([...exclusiveEulerKeys, ...keysList]),
     );
+    if (keysList.length > 0) {
+      logSuccess(
+        `📥 Đã nạp ngầm thành công ${keysList.length} Euler Key mới từ kho dự trữ của Master!`,
+      );
+    }
   });
 
   masterSocket.on("worker_key_replacement", (data) => {
@@ -1606,6 +1611,15 @@ function startWebcast(channel, proxy) {
       return;
     }
     // ==========================================
+    // 💡 LÁ CHẮN DOMINO 401 TẠI ĐÂY:
+    // Kiểm tra xem thằng đi trước có vừa "khai tử" cái Key này chưa.
+    // Nếu Key đã bị xóa khỏi kho, lập tức "quay xe", trả kênh về hàng đợi để nạp Key mới!
+    // ==========================================
+    if (!exclusiveEulerKeys.includes(key)) {
+      safeEmitRadarResult({ channel, status: "REQUEUE" });
+      return;
+    }
+    // ==========================================
     // 💡 BẢN VÁ: CHUYỂN ĐỒNG HỒ VÀO BÊN TRONG KHÓA
     // Chỉ bắt đầu đếm 60s khi luồng thực sự được mở khóa và bắt đầu chạy
     // ==========================================
@@ -1700,11 +1714,6 @@ function startWebcast(channel, proxy) {
             return; // Thoát luôn, không ném vào check Key hay phạt Proxy vì đây chỉ là lag mạng
           }
           const isKeyDead = await checkAndReportDeadKey(err, key);
-
-          logWarn(
-            `[SOCKET LỖI] Kênh: ${channel.username} | Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
-          );
-
           if (isKeyDead) {
             setTimeout(() => {
               safeEmitRadarResult({ channel, status: "ERROR" });
@@ -1712,6 +1721,10 @@ function startWebcast(channel, proxy) {
             stopWebcast(channel.username);
             return;
           }
+
+          logWarn(
+            `[SOCKET LỖI] Kênh: ${channel.username} | Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
+          );
 
           if (
             errMsg.includes("not found") ||
