@@ -11,7 +11,7 @@ const fs = require("fs");
 const EulerStreamApiClient = require("@eulerstream/euler-api-sdk").default;
 
 const CONFIG_FILE = "vps_config.json";
-const EULER_PROXY_PER_KEY = 3;
+const EULER_PROXY_PER_KEY = 2;
 
 let config = {
   masterUrl: "http://localhost:3001",
@@ -109,7 +109,7 @@ let apiCheckCache = new Map();
 let keyCooldown = {};
 let keyStrikeCount = {};
 
-const EULER_REQUESTS_PER_MINUTE = 12; // An toàn: Tối đa 12 kết nối/phút cho 1 Euler Key
+const EULER_REQUESTS_PER_MINUTE = 8; // An toàn: Tối đa 8 kết nối/phút cho 1 Euler Key
 let eulerRateLimiter = {};
 function canUseEulerKey(key) {
   if (!key) return false;
@@ -488,7 +488,7 @@ async function checkProxyHealth() {
 
   updateDynamicCapacity();
 }
-setInterval(checkProxyHealth, 180000);
+setInterval(checkProxyHealth, 5 * 60 * 1000);
 setTimeout(checkProxyHealth, 2000);
 
 function getNextAvailableProxy() {
