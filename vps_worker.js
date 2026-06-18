@@ -742,6 +742,7 @@ function connectToMaster() {
     delete keyStrikeCount[data.deadKey];
     delete keyCooldown[data.deadKey];
     delete eulerRateLimiter[data.deadKey];
+    delete keyInitMutex[data.deadKey]; // 💡 THÊM VÀO ĐÂY
   });
 
   masterSocket.on("worker_receive_proxies", (assignedProxiesArr) => {
@@ -995,8 +996,13 @@ async function checkLiveStatus(username, proxy) {
         }, 12000);
       });
 
-      const res = await Promise.race([fetchPromise, hardTimeout]);
-      clearTimeout(timeoutHandle);
+      // THAY BẰNG:
+      let res;
+      try {
+        res = await Promise.race([fetchPromise, hardTimeout]);
+      } finally {
+        clearTimeout(timeoutHandle); // 💡 VÁ LỖI TỬ HUYỆT: Luôn tắt đồng hồ dù thành công hay văng lỗi sớm
+      }
 
       // 💡 LỚP GIÁP 2: Bị TikTok chặn HTTP (Giới hạn request)
       if ([403, 429].includes(res.statusCode)) {
@@ -1368,6 +1374,41 @@ function startWebcast(channel, proxy) {
     ) {
       return false;
     }
+    // ==========================================
+    // 💡 BẢN VÁ: THÊM LẠI LỚP BẢO VỆ SERVER EULER SẬP
+    // ==========================================
+    if (
+      errText.includes("status 500") ||
+      errText.includes("status 502") ||
+      errText.includes("status 503") ||
+      errText.includes("status 504")
+    ) {
+      logWarn(
+        `[⚠️] 🌐 SERVER EULER NGHẼN MẠNG (50x): Cho Key [${targetKey.substring(0, 5)}...] nghỉ 30s!`,
+      );
+      keyCooldown[targetKey] = now + 30000;
+      return true; // Chặn đứng việc gọi check Quota dư thừa
+    }
+    const report_key = (key) => {
+      // 💡 VÁ LỖI TỬ HUYỆT: Xóa sạch Key khỏi bộ nhớ cục bộ NGAY VÀ LUÔN
+      // Không chờ đợi Master. Cắt đứt hoàn toàn liên kết của Proxy với Key này.
+      exclusiveEulerKeys = exclusiveEulerKeys.filter((k) => k !== key);
+
+      for (let [p, k] of eulerKeyMap.entries()) {
+        if (k === key) eulerKeyMap.delete(p);
+      }
+
+      // Xóa án tích để tránh kẹt logic
+      delete keyCooldown[key];
+      delete keyStrikeCount[key];
+      delete keyInitMutex[key];
+      if (masterSocket?.connected) {
+        masterSocket.emit("worker_report_dead_key", {
+          key: key,
+          workerName: config.workerName,
+        });
+      }
+    };
 
     // ==========================================
     // 1. ÁN TỬ TỨC THÌ (LỖI CỨNG 100%): Báo Master đổi Key ngay
@@ -1381,16 +1422,9 @@ function startWebcast(channel, proxy) {
       errText.includes("sign error")
     ) {
       logWarn(
-        `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Đã bắt được lỗi 401. Báo Master thu hồi Key này!`,
+        `[❌] 🔑 KEY LỖI CỨNG: Đã bắt được lỗi 401. Báo Master thu hồi Key này!`,
       );
-      keyCooldown[targetKey] = now + 5 * 60000;
-      if (masterSocket?.connected) {
-        masterSocket.emit("worker_report_dead_key", {
-          key: targetKey,
-          workerName: config.workerName,
-          library: libraryUsed,
-        });
-      }
+      report_key(targetKey);
       return true;
     }
 
@@ -1425,13 +1459,7 @@ function startWebcast(channel, proxy) {
           logWarn(
             `[❌] 🔑 KEY HẾT QUOTA (Còn 0 lượt): Báo Master đổi Key mới!`,
           );
-          keyCooldown[targetKey] = now + 5 * 60000;
-          if (masterSocket?.connected) {
-            masterSocket.emit("worker_report_dead_key", {
-              key: targetKey,
-              workerName: config.workerName,
-            });
-          }
+          report_key(targetKey);
           return true;
         } else {
           // Còn Quota nhưng vẫn văng lỗi (Do nghẽn mạng TikTok, IP Proxy bẩn...)
@@ -1442,13 +1470,7 @@ function startWebcast(channel, proxy) {
             logWarn(
               `[❌] 🔑 KEY CÒN QUOTA (${remaining}) NHƯNG LỖI 3 LẦN LIÊN TIẾP: Ép Master đổi Key mới!`,
             );
-            keyCooldown[targetKey] = now + 5 * 60000;
-            if (masterSocket?.connected) {
-              masterSocket.emit("worker_report_dead_key", {
-                key: targetKey,
-                workerName: config.workerName,
-              });
-            }
+            report_key(targetKey);
             return true;
           } else {
             logWarn(
@@ -1474,13 +1496,7 @@ function startWebcast(channel, proxy) {
         logWarn(
           `[❌] 🔑 API EULER TỪ CHỐI KẾT NỐI 3 LẦN LIÊN TIẾP. Ép đổi Key mới!`,
         );
-        keyCooldown[targetKey] = now + 5 * 60000;
-        if (masterSocket?.connected) {
-          masterSocket.emit("worker_report_dead_key", {
-            key: targetKey,
-            workerName: config.workerName,
-          });
-        }
+        report_key(targetKey);
       } else {
         keyCooldown[targetKey] = now + 30000; // Phạt nhẹ 30s
       }
@@ -1663,6 +1679,15 @@ function startWebcast(channel, proxy) {
         if (!exclusiveEulerKeys.includes(key)) {
           stopWebcast(channel.username);
           return;
+        }
+        // 💡 BẢN VÁ: XỬ LÝ ÊM ÁI LỖI TIMEOUT (Do mạng lag, Proxy chậm)
+        if (errMsg.includes("socket_timeout")) {
+          logWarn(
+            `[⏳] Kênh ${channel.username} quá hạn kết nối 15s (Proxy chậm). Sẽ thử lại sau!`,
+          );
+          safeEmitRadarResult({ channel, status: "ERROR" });
+          stopWebcast(channel.username);
+          return; // Thoát luôn, không ném vào check Key hay phạt Proxy vì đây chỉ là lag mạng
         }
         const isKeyDead = await checkAndReportDeadKey(err, key);
         let errMsg = String(err?.message || err).toLowerCase();
@@ -1924,6 +1949,7 @@ function balanceResources() {
         delete keyStrikeCount[deadKey];
         delete keyCooldown[deadKey];
         delete eulerRateLimiter[deadKey];
+        delete keyInitMutex[deadKey];
         // 2. 💡 RÚT ĐIỆN LUỒNG ĐANG SỬ DỤNG
         for (let user in activeConnections) {
           if (
