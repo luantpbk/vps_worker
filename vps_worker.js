@@ -1310,7 +1310,7 @@ async function executeTask(channel) {
 }
 
 function startWebcast(channel, proxy) {
-  logInfo(`Bắt đầu cắm socket ${channel}`);
+  logInfo(`Bắt đầu cắm socket ${channel.username}`);
   if (activeConnections[channel.username]) return;
   connectionLocks.set(channel.username, Date.now());
 
@@ -1346,6 +1346,8 @@ function startWebcast(channel, proxy) {
   const eulerOptions = {
     signApiKey: key,
     webClientOptions: {
+      httpAgent: proxyAgent,
+      httpsAgent: proxyAgent,
       agent: {
         http: proxyAgent,
         https: proxyAgent,
@@ -1633,11 +1635,11 @@ function startWebcast(channel, proxy) {
     }
     // ==========================================
     // 💡 BẢN VÁ: CHUYỂN ĐỒNG HỒ VÀO BÊN TRONG KHÓA
-    // Chỉ bắt đầu đếm 60s khi luồng thực sự được mở khóa và bắt đầu chạy
+    // Chỉ bắt đầu đếm 15s khi luồng thực sự được mở khóa và bắt đầu chạy
     // ==========================================
     let timeoutHandle;
     const timeoutPromise = new Promise((_, r) => {
-      timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 60000);
+      timeoutHandle = setTimeout(() => r(new Error("SOCKET_TIMEOUT")), 15000);
     });
     try {
       // BẮT BUỘC PHẢI CÓ 'await' Ở ĐÂY ĐỂ GIỮ KHÓA CHO ĐẾN KHI CHẠY XONG catch/then
