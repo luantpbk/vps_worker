@@ -1453,14 +1453,16 @@ function startWebcast(channel, proxy) {
       logInfo("Kill socket (return true) nhưng không gọi API");
       return true;
     }
-
+    // 💡 KHÓA TẠM THỜI (OPTIMISTIC LOCK) SAU CACHE:
+    // Khóa 15s TRƯỚC KHI gọi API để các luồng khác không lao vào spam.
+    keyCooldown[targetKey] = now + 15000;
     apiCheckCache.set(cacheKey, now);
 
     try {
       const eulerClient = new EulerStreamApiClient({ apiKey: targetKey });
       let apiTimer;
       const apiTimeout = new Promise((_, r) => {
-        apiTimer = setTimeout(() => r(new Error("API_TIMEOUT")), 10000);
+        apiTimer = setTimeout(() => r(new Error("API_TIMEOUT")), 5000);
       });
       const res = await Promise.race([
         eulerClient.webcast.getRateLimits(),
@@ -1702,13 +1704,7 @@ function startWebcast(channel, proxy) {
               conn.client.ws.terminate();
             }
           } catch (e) {}
-          // 💡 CHIẾN THUẬT CẮT BÃO LOG (CHỐNG ẢO GIÁC)
-          // Nếu Key đã bị Master thu hồi khỏi kho, các kết nối đang chạy dở sẽ tự hủy trong im lặng
-          if (!exclusiveEulerKeys.includes(key)) {
-            logWarn(`Key ${key} đã bị thu hồi từ trước`);
-            stopWebcast(channel.username);
-            return;
-          }
+
           // ==========================================
           // 💡 VÁ LỖI TẠI ĐÂY: Khai báo errMsg ngay lập tức TRƯỚC KHI sử dụng!
           // ==========================================
@@ -1716,12 +1712,21 @@ function startWebcast(channel, proxy) {
             .toLowerCase()
             .replace(/\u001b\[.*?m/g, "") // Xóa mã màu
             .replace(/\n/g, " "); // Xóa dấu xuống dòng
-
+          // ==========================================
+          // 💡 KÉO LOG LÊN ĐẦU: Đảm bảo nhìn thấy mọi lỗi dù bị return ở đâu
+          // ==========================================
+          logWarn(
+            `[SOCKET LỖI] Kênh: ${channel.username} | Proxy: ${getShortProxy(proxy)} | Lỗi: ${errMsg}`,
+          );
+          // 💡 CHIẾN THUẬT CẮT BÃO LOG (CHỐNG ẢO GIÁC)
+          // Nếu Key đã bị Master thu hồi khỏi kho, các kết nối đang chạy dở sẽ tự hủy trong im lặng
+          if (!exclusiveEulerKeys.includes(key)) {
+            logWarn(`Key ${key} đã bị thu hồi từ trước`);
+            stopWebcast(channel.username);
+            return;
+          }
           // 💡 BẢN VÁ: XỬ LÝ ÊM ÁI LỖI TIMEOUT (Do mạng lag, Proxy chậm)
           if (errMsg.includes("socket_timeout")) {
-            logWarn(
-              `[⏳] Kênh ${channel.username} quá hạn kết nối 15s (Proxy chậm). Sẽ thử lại sau!`,
-            );
             safeEmitRadarResult({ channel, status: "ERROR" });
             stopWebcast(channel.username);
             return; // Thoát luôn, không ném vào check Key hay phạt Proxy vì đây chỉ là lag mạng
