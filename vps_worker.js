@@ -692,18 +692,26 @@ function connectToMaster() {
 
   masterSocket.on("worker_key_replacement", (data) => {
     exclusiveEulerKeys = exclusiveEulerKeys.filter((k) => k !== data.deadKey);
-    if (data.newKey && !exclusiveEulerKeys.includes(data.newKey))
+
+    // 💡 BẢN VÁ: Thêm log để bạn nhìn thấy tiến trình đổi Key
+    if (data.newKey && !exclusiveEulerKeys.includes(data.newKey)) {
       exclusiveEulerKeys.push(data.newKey);
-    // 💡 FIX 1: Xóa ngay Key chết khỏi bộ đệm Proxy
+      logSuccess(
+        `🔄 Đổi Key: Vứt bỏ [${data.deadKey}] -> Nạp mới [${data.newKey}]`,
+      );
+    } else {
+      logWarn(
+        `⚠️ Đã vứt bỏ [${data.deadKey}] nhưng Master báo KHO ĐÃ HẾT KEY DỰ PHÒNG!`,
+      );
+    }
+
     for (let [p, k] of eulerKeyMap.entries()) {
       if (k === data.deadKey) eulerKeyMap.delete(p);
     }
-    // ==========================================
-    // 💡 VÁ LỖI MEMORY LEAK: Dọn sạch mọi tàn dư của Key chết
-    // ==========================================
+
     delete keyStrikeCount[data.deadKey];
     delete keyCooldown[data.deadKey];
-    delete eulerRateLimiter[data.deadKey]; // Xóa luôn mảng đếm Request
+    delete eulerRateLimiter[data.deadKey];
   });
 
   masterSocket.on("worker_receive_proxies", (assignedProxiesArr) => {
@@ -1267,7 +1275,6 @@ function startWebcast(channel, proxy) {
   const geo = getGeoParams(currentCountry);
 
   // Ghi nhớ thư viện được khởi tạo tại thời điểm này
-  const libraryUsed = config.activeLibrary;
   let key, conn;
   let roomId = null;
   let pendingBoxes = [];
@@ -1319,40 +1326,33 @@ function startWebcast(channel, proxy) {
     if (!targetKey) return false;
 
     const now = Date.now();
-    // 💡 LỚP GIÁP 1: Nếu key đã bị phạt trước đó rồi thì báo chết/ngừng luôn, chặn đứng spam.
     if (keyCooldown[targetKey] && now < keyCooldown[targetKey]) return true;
 
-    let errText =
-      typeof errObj === "string"
-        ? errObj
-        : errObj?.message || JSON.stringify(errObj);
-    const msg = String(errText).toLowerCase();
+    // 💡 BẢN VÁ: Ép kiểu chuỗi siêu cứng, gom toàn bộ Object và ký tự ẩn
+    let errText = String(errObj?.message || errObj).toLowerCase();
 
-    // ==========================================
-    // 💡 BẢN VÁ: THA BỔNG CHO KEY
-    // Chặn đứng bug thư viện: Lỗi này 100% do Proxy bẩn gây ra, Key không có tội.
-    // ==========================================
+    // Bỏ qua lỗi của Proxy bẩn
     if (
-      msg.includes("reading 'retry-after'") ||
-      msg.includes("properties of undefined")
+      errText.includes("reading 'retry-after'") ||
+      errText.includes("properties of undefined")
     ) {
-      return false; // Trả về false để Master không trừ điểm Key, nhường quyền "chém" cho Proxy
+      return false;
     }
 
     // ==========================================
     // 1. ÁN TỬ TỨC THÌ (LỖI CỨNG 100%): Báo Master đổi Key ngay
     // ==========================================
     if (
-      msg.includes("insufficient balance") ||
-      msg.includes("api key is invalid") ||
-      msg.includes("invalid api key") ||
-      msg.includes("unauthorized") ||
-      msg.includes("unexpected sign server status 401")
+      errText.includes("insufficient balance") ||
+      errText.includes("api key is invalid") ||
+      errText.includes("invalid api key") ||
+      errText.includes("unauthorized") ||
+      errText.includes("sign server status 401")
     ) {
       logWarn(
-        `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Báo Master vứt bỏ Key này!`,
+        `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Đã bắt được lỗi 401. Báo Master thu hồi Key này!`,
       );
-      keyCooldown[targetKey] = now + 5 * 60000; // Phạt 5 phút
+      keyCooldown[targetKey] = now + 5 * 60000;
       if (masterSocket?.connected) {
         masterSocket.emit("worker_report_dead_key", {
           key: targetKey,
@@ -1399,7 +1399,6 @@ function startWebcast(channel, proxy) {
             masterSocket.emit("worker_report_dead_key", {
               key: targetKey,
               workerName: config.workerName,
-              library: libraryUsed,
             });
           }
           return true;
@@ -1417,7 +1416,6 @@ function startWebcast(channel, proxy) {
               masterSocket.emit("worker_report_dead_key", {
                 key: targetKey,
                 workerName: config.workerName,
-                library: libraryUsed,
               });
             }
             return true;
@@ -1450,7 +1448,6 @@ function startWebcast(channel, proxy) {
           masterSocket.emit("worker_report_dead_key", {
             key: targetKey,
             workerName: config.workerName,
-            library: libraryUsed,
           });
         }
       } else {
