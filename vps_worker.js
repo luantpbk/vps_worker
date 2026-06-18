@@ -1371,8 +1371,10 @@ function startWebcast(channel, proxy) {
     const now = Date.now();
     if (keyCooldown[targetKey] && now < keyCooldown[targetKey]) return true;
 
-    // 💡 BẢN VÁ: Ép kiểu chuỗi siêu cứng, gom toàn bộ Object và ký tự ẩn
-    let errText = String(errObj?.message || errObj).toLowerCase();
+    let errText = String(errObj?.message || errObj)
+      .toLowerCase()
+      .replace(/\u001b\[.*?m/g, "") // Cạo mã màu
+      .replace(/\n/g, " "); // Nối thành 1 dòng
 
     // Bỏ qua lỗi của Proxy bẩn
     if (
