@@ -1347,7 +1347,8 @@ function startWebcast(channel, proxy) {
       errText.includes("api key is invalid") ||
       errText.includes("invalid api key") ||
       errText.includes("unauthorized") ||
-      errText.includes("sign server status 401")
+      errText.includes("sign server status 401") ||
+      errText.includes("sign error")
     ) {
       logWarn(
         `[❌] 🔑 KEY LỖI CỨNG (${libraryUsed}): Đã bắt được lỗi 401. Báo Master thu hồi Key này!`,
@@ -1614,7 +1615,12 @@ function startWebcast(channel, proxy) {
           conn.client.ws.terminate();
         }
       } catch (e) {}
-
+      // 💡 CHIẾN THUẬT CẮT BÃO LOG (CHỐNG ẢO GIÁC)
+      // Nếu Key đã bị Master thu hồi khỏi kho, các kết nối đang chạy dở sẽ tự hủy trong im lặng
+      if (!exclusiveEulerKeys.includes(key)) {
+        stopWebcast(channel.username);
+        return;
+      }
       const isKeyDead = await checkAndReportDeadKey(err, key);
       let errMsg = String(err?.message || err).toLowerCase();
 
