@@ -643,7 +643,11 @@ let disconnectTimer = null;
 function connectToMaster() {
   if (masterSocket) masterSocket.disconnect();
   masterSocket = ClientIO(config.masterUrl, {
-    auth: { token: process.env.SOCKET_SECRET },
+    auth: {
+      token: process.env.SOCKET_SECRET,
+      role: "worker",
+      clientId: config.workerName,
+    },
     reconnection: true,
     reconnectionDelay: 1000,
     transports: ["websocket"],
